@@ -1,5 +1,6 @@
 import {
   Accidental,
+  Articulation,
   Beam,
   BarlineType,
   Dot,
@@ -12,7 +13,11 @@ import {
   Stem,
   Tuplet,
   Voice,
+  VoltaType,
 } from 'vexflow/bravura';
+import type { Articulation as ArticulationName, Dynamic } from '../model/score';
+import { barMark } from '../model/score';
+import { displayChord } from '../model/chords';
 import type { Fraction } from '../model/fraction';
 import type { MusicEvent, Score, Staff } from '../model/score';
 import { allStaves, effectiveKey, effectiveTimeSignature, eventValue, MAX_VOICES, measureCapacity, voiceLength } from '../model/score';
@@ -82,6 +87,50 @@ const TOP = 24;
 const MARGIN_X = 18;
 const MIN_MEASURE = 120;
 const VOICE_COLORS_ALPHA = ['', 'cc', 'cc', 'cc'];
+
+/** Códigos de articulação do VexFlow (glifos SMuFL). */
+const VEX_ART: Record<ArticulationName, string> = {
+  staccato: 'a.',
+  staccatissimo: 'av',
+  tenuto: 'a-',
+  accent: 'a>',
+  marcato: 'a^',
+  fermata: 'a@a',
+};
+
+/** Glifos SMuFL das dinâmicas (fonte Bravura). */
+export const DYNAMIC_GLYPH: Record<Dynamic, string> = {
+  ppp: '\uE52A', pp: '\uE52B', p: '\uE520', mp: '\uE52C', mf: '\uE52D',
+  f: '\uE522', ff: '\uE52F', fff: '\uE530', fp: '\uE534', sfz: '\uE539',
+};
+
+/** O que cada pauta precisa de espaço extra (letra/dinâmica embaixo, cifra em cima). */
+function staffNeeds(staff: Staff) {
+  const need = { above: false, lyrics: false, dynamics: false };
+  for (const m of staff.measures) {
+    for (const v of m.voices) {
+      for (const e of v.events) {
+        if (!e.marks) continue;
+        if (e.marks.chordSymbol) need.above = true;
+        if (e.marks.lyric) need.lyrics = true;
+        if (e.marks.dynamic) need.dynamics = true;
+      }
+    }
+  }
+  return need;
+}
+
+interface TextMark {
+  ri: number;
+  kind: 'chord' | 'lyric' | 'dynamic';
+  x: number;
+  text: string;
+  /** topo e base da nota (para a linha de texto não bater nas notas) */
+  top: number;
+  bottom: number;
+  color: string;
+  voiceKey: string;
+}
 
 const VEX_CLEF: Record<Clef, string> = { treble: 'treble', bass: 'bass', alto: 'alto', tenor: 'tenor' };
 
@@ -184,6 +233,14 @@ function buildStaffMeasure(
       note.setStyle({ fillStyle: color, strokeStyle: color });
       note.setLedgerLineStyle({ strokeStyle: theme.ink, lineWidth: 1.4 });
       if (e.duration.dots) Dot.buildAndAttach([note], { all: true });
+      for (const a of e.marks?.articulations ?? []) {
+        const art = new Articulation(VEX_ART[a]);
+        // acima nas hastes para baixo (e sempre a fermata); abaixo nas hastes para cima
+        const above = a === 'fermata' ? vi % 2 === 0 || !multi : e.kind === 'rest' || note.getStemDirection() === Stem.DOWN;
+        art.setPosition(above ? 3 : 4);
+        art.setStyle({ fillStyle: color, strokeStyle: color });
+        note.addModifier(art, 0);
+      }
       notes.push(note);
       logical.push(map.get(e.fragmentOf ?? e.id) ?? -1);
       evs.push(e);
@@ -270,6 +327,7 @@ function decorate(stave: Stave, score: Score, mi: number, firstInLine: boolean, 
   } else if (keyChanges(score, mi)) {
     stave.addKeySignature(vexKey(effectiveKey(score, mi)), vexKey(effectiveKey(score, mi - 1)));
   }
+  if (barMark(score, mi).repeatStart) stave.setBegBarType(BarlineType.REPEAT_BEGIN);
   if (timeChanges(score, mi)) stave.addTimeSignature(`${ts.beats}/${ts.beatType}`);
 }
 
@@ -315,13 +373,19 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
   if (line.length) systems.push(line);
 
   // posição vertical de cada pauta dentro do sistema
+  const needs = refs.map((r) => staffNeeds(r.staff));
+  const below = (i: number) => (needs[i].lyrics ? 30 : needs[i].dynamics ? 18 : 0);
+  for (const n of needs) if (n.lyrics && n.dynamics) n.above = true;
+  const hasEndings = (score.bars ?? []).some((b) => b.ending);
   const offsets: number[] = [];
-  let off = 0;
+  const aboveSpace = (i: number) => (needs[i].above ? (needs[i].lyrics && needs[i].dynamics ? 44 : 22) : 0);
+  const voltaLift = needs[0]?.above ? Math.max(0, aboveSpace(0) - 16) : 0;
+  let off = aboveSpace(0) + (hasEndings ? 16 + voltaLift : 0);
   refs.forEach((r, i) => {
-    if (i > 0) off += r.partIndex === refs[i - 1].partIndex ? STAFF_GAP : PART_GAP;
+    if (i > 0) off += (r.partIndex === refs[i - 1].partIndex ? STAFF_GAP : PART_GAP) + below(i - 1) + aboveSpace(i);
     offsets.push(off);
   });
-  const systemHeight = off + 40 + SYSTEM_EXTRA + 40;
+  const systemHeight = off + 40 + SYSTEM_EXTRA + 40 + below(refs.length - 1);
 
   const height = TOP + systems.length * systemHeight + 10;
   const renderer = opts.canvas
@@ -354,6 +418,8 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
     let x = left;
     const firstStaves: Stave[] = [];
     const lastStaves: Stave[] = [];
+    const texts: TextMark[] = [];
+    const lineStaves: Stave[][] = refs.map(() => []);
 
     sys.forEach((mi, k) => {
       const w = widths[k] * scale;
@@ -362,8 +428,21 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
         const stave = new Stave(x, top + offsets[ri], w);
         decorate(stave, score, mi, k === 0, r.staff.clef);
         if (k === 0 && ri === 0 && mi > 0) stave.setMeasure(mi + 1);
-        if (mi === measureCount - 1) stave.setEndBarType(BarlineType.END);
+        const bar = barMark(score, mi);
+        if (bar.repeatEnd) stave.setEndBarType(BarlineType.REPEAT_END);
+        else if (mi === measureCount - 1) stave.setEndBarType(BarlineType.END);
         else if (keyChanges(score, mi + 1)) stave.setEndBarType(BarlineType.DOUBLE);
+        if (ri === 0 && bar.ending) {
+          const prev = mi > 0 ? barMark(score, mi - 1).ending : undefined;
+          const next = barMark(score, mi + 1).ending;
+          const begins = prev !== bar.ending || k === 0;
+          const ends = next !== bar.ending || k === sys.length - 1;
+          // a casa 2 fica aberta no fim (sem o traço para baixo)
+          const closed = ends && (bar.ending === 1 || bar.repeatEnd);
+          const type = begins ? (closed ? VoltaType.BEGIN_END : VoltaType.BEGIN) : closed ? VoltaType.END : VoltaType.MID;
+          stave.setVoltaType(type, begins && prev !== bar.ending ? `${bar.ending}.` : '', -12 - voltaLift);
+        }
+        lineStaves[ri].push(stave);
         stave.setStyle({ strokeStyle: theme.muted, fillStyle: theme.ink });
         stave.setContext(ctx).draw();
         staveAt.set(`${ri}:${mi}`, stave);
@@ -420,6 +499,15 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
           v.notes.forEach((n, i) => {
             const li = v.logical[i];
             drawn.get(key)!.push({ note: n, logical: li, event: v.events[i], mi, full: v.full, stave });
+            const marks = v.events[i]?.marks;
+            if (marks && !(v.events[i] as { fragmentOf?: string }).fragmentOf) {
+              const bb = n.getBoundingBox();
+              const color = (n.getStyle()?.fillStyle as string | undefined) ?? theme.ink;
+              const base = { ri, x: n.getAbsoluteX() + n.getGlyphWidth() / 2, top: bb.getY(), bottom: bb.getY() + bb.getH(), color, voiceKey: key };
+              if (marks.chordSymbol) texts.push({ ...base, kind: 'chord', text: displayChord(marks.chordSymbol) });
+              if (marks.lyric) texts.push({ ...base, kind: 'lyric', text: marks.lyric });
+              if (marks.dynamic) texts.push({ ...base, x: n.getAbsoluteX() - 4, kind: 'dynamic', text: DYNAMIC_GLYPH[marks.dynamic] });
+            }
             if (li >= 0) {
               const bb = n.getBoundingBox();
               hits.push({
@@ -445,6 +533,8 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
       });
       x += w;
     });
+
+    drawTexts(ctx, texts, lineStaves, theme);
 
     // conectores no começo do sistema: linha única e chave do piano
     if (firstStaves.length > 1) {
@@ -491,6 +581,57 @@ function groupByPart(refs: StaffRef[]): number[][] {
     else groups.push([i]);
   });
   return groups;
+}
+
+/**
+ * Cifras, letra e dinâmicas: cada tipo numa linha reta por pauta e sistema,
+ * afastada o bastante para não bater nas notas mais altas/baixas da linha.
+ */
+function drawTexts(ctx: ReturnType<Renderer['getContext']>, texts: TextMark[], lineStaves: Stave[][], theme: RenderTheme) {
+  lineStaves.forEach((staves, ri) => {
+    if (!staves.length) return;
+    const mine = texts.filter((t) => t.ri === ri);
+    if (!mine.length) return;
+    const topLine = staves[0].getYForLine(0);
+    const bottomLine = staves[0].getYForLine(4);
+    const minTop = Math.min(topLine - 6, ...mine.map((t) => t.top));
+    const maxBottom = Math.max(bottomLine + 6, ...mine.map((t) => t.bottom));
+    const hasLyrics = mine.some((t) => t.kind === 'lyric');
+    const hasDyn = mine.some((t) => t.kind === 'dynamic');
+    const lyricY = maxBottom + 22;
+    // com letra, as dinâmicas vão para cima da pauta (como em partes de canto)
+    const dynY = hasLyrics ? minTop - 8 : maxBottom + 24;
+    const chordY = hasLyrics && hasDyn ? minTop - 36 : minTop - 10;
+
+    ctx.save();
+    for (const t of mine) {
+      ctx.setFillStyle(t.color === 'transparent' ? theme.ink : t.color);
+      if (t.kind === 'chord') {
+        ctx.setFont('Manrope, system-ui, sans-serif', 15, 'bold');
+        ctx.fillText(t.text, t.x - 6, chordY);
+      } else if (t.kind === 'dynamic') {
+        ctx.setFont('Bravura', 30, 'normal');
+        ctx.fillText(t.text, t.x, dynY);
+      }
+    }
+    // letra: centrada na nota; hífen entre as sílabas da mesma palavra
+    ctx.setFont('Manrope, system-ui, sans-serif', 14, 'normal');
+    const lyrics = mine.filter((t) => t.kind === 'lyric');
+    lyrics.forEach((t, i) => {
+      const cont = t.text.endsWith('-');
+      const word = cont ? t.text.slice(0, -1) : t.text;
+      const w = ctx.measureText(word).width;
+      ctx.setFillStyle(t.color === 'transparent' ? theme.ink : t.color);
+      ctx.fillText(word, t.x - w / 2, lyricY);
+      if (cont) {
+        const next = lyrics.slice(i + 1).find((n) => n.voiceKey === t.voiceKey);
+        const end = next ? next.x - ctx.measureText(next.text.replace(/-$/, '')).width / 2 : t.x + w / 2 + 24;
+        const hx = (t.x + w / 2 + end) / 2 - 3;
+        ctx.fillText('-', hx, lyricY);
+      }
+    });
+    ctx.restore();
+  });
 }
 
 function drawTies(

@@ -28,8 +28,53 @@ export interface Tuplet {
   normal: number;
 }
 
+/** Dinâmicas (intensidade a partir deste evento). */
+export type Dynamic = 'ppp' | 'pp' | 'p' | 'mp' | 'mf' | 'f' | 'ff' | 'fff' | 'fp' | 'sfz';
+export const DYNAMICS: Dynamic[] = ['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'fp', 'sfz'];
+
+export type Articulation = 'staccato' | 'staccatissimo' | 'tenuto' | 'accent' | 'marcato' | 'fermata';
+export const ARTICULATIONS: Articulation[] = ['staccato', 'staccatissimo', 'tenuto', 'accent', 'marcato', 'fermata'];
+export const ARTICULATION_NAMES_PT: Record<Articulation, string> = {
+  staccato: 'Staccato',
+  staccatissimo: 'Staccatissimo',
+  tenuto: 'Tenuto',
+  accent: 'Acento',
+  marcato: 'Marcato',
+  fermata: 'Fermata',
+};
+
+/** Marcas de expressão e texto presas a um evento. */
+export interface Marks {
+  dynamic?: Dynamic;
+  articulations?: Articulation[];
+  /** Sílaba da letra (estrofe 1). Terminada em "-" = a palavra continua na próxima nota. */
+  lyric?: string;
+  /** Cifra (ex.: "C", "Am7", "G/B"). */
+  chordSymbol?: string;
+}
+
+export function cloneMarks(m: Marks | undefined): Marks | undefined {
+  if (!m) return undefined;
+  const out: Marks = { ...m };
+  if (m.articulations) out.articulations = [...m.articulations];
+  return out;
+}
+
+/** Remove campos vazios; devolve undefined se não sobrou nada. */
+export function tidyMarks(m: Marks | undefined): Marks | undefined {
+  if (!m) return undefined;
+  const out: Marks = {};
+  if (m.dynamic) out.dynamic = m.dynamic;
+  if (m.articulations?.length) out.articulations = ARTICULATIONS.filter((a) => m.articulations!.includes(a));
+  if (m.lyric?.trim()) out.lyric = m.lyric.trim();
+  if (m.chordSymbol?.trim()) out.chordSymbol = m.chordSymbol.trim();
+  return Object.keys(out).length ? out : undefined;
+}
+
 interface EventBase {
   id: string;
+  /** Só no primeiro pedaço de uma nota dividida. */
+  marks?: Marks;
   duration: Duration;
   /** Eventos com o mesmo tuplet.id formam um grupo que nunca é dividido. */
   tuplet?: Tuplet;
@@ -98,6 +143,18 @@ export interface MeasureChange {
   keyFifths?: Fifths;
 }
 
+/**
+ * Marcas de estrutura num compasso (valem para todas as pautas):
+ * início/fim de repetição e casa de 1ª/2ª vez.
+ */
+export interface BarMark {
+  measure: number;
+  repeatStart?: boolean;
+  repeatEnd?: boolean;
+  /** Casa (volta): 1 = toca só na 1ª vez, 2 = só na 2ª. */
+  ending?: 1 | 2;
+}
+
 export interface Score {
   id: string;
   title: string;
@@ -108,7 +165,68 @@ export interface Score {
   keyFifths: Fifths;
   /** Mudanças no meio da música, ordenadas por compasso. O compasso 0 usa os valores acima. */
   changes: MeasureChange[];
+  /** Repetições e casas, ordenadas por compasso. */
+  bars?: BarMark[];
   parts: Part[];
+}
+
+export function barMark(score: Score, measure: number): BarMark {
+  return score.bars?.find((b) => b.measure === measure) ?? { measure };
+}
+
+/** Altera as marcas de um compasso (remove a entrada se ficar vazia). */
+export function setBarMark(score: Score, measure: number, patch: Partial<Omit<BarMark, 'measure'>>): void {
+  const bars = (score.bars ??= []);
+  let b = bars.find((x) => x.measure === measure);
+  if (!b) {
+    b = { measure };
+    bars.push(b);
+  }
+  Object.assign(b, patch);
+  for (const k of ['repeatStart', 'repeatEnd', 'ending'] as const) if (!b[k]) delete b[k];
+  score.bars = bars.filter((x) => x.repeatStart || x.repeatEnd || x.ending).sort((a, c) => a.measure - c.measure);
+}
+
+/**
+ * Ordem em que os compassos tocam, desdobrando as repetições:
+ * |: A B :| toca A B A B; com casas, a 1ª toca só na primeira vez e a 2ª só na segunda.
+ * Sem início de repetição, volta para o começo (ou para o fim da repetição anterior).
+ */
+export function playOrder(score: Score, measureCount: number): number[] {
+  const order: number[] = [];
+  let sectionStart = 0;
+  let pass = 1;
+  let prevEnding: number | undefined;
+  const repeated = new Set<number>();
+  let i = 0;
+  let guard = 0;
+  while (i < measureCount && guard++ < measureCount * 4 + 16) {
+    const b = barMark(score, i);
+    if (b.repeatStart && !(pass === 2 && i === sectionStart)) {
+      sectionStart = i;
+      pass = 1;
+    }
+    if (pass === 2 && prevEnding === 2 && !b.ending) pass = 1;
+    prevEnding = b.ending;
+    if (b.ending && b.ending !== pass) {
+      i++;
+      continue;
+    }
+    order.push(i);
+    if (b.repeatEnd && !repeated.has(i)) {
+      repeated.add(i);
+      pass = 2;
+      prevEnding = undefined;
+      i = sectionStart;
+      continue;
+    }
+    if (b.repeatEnd) {
+      pass = b.ending === 1 ? 2 : 1;
+      sectionStart = i + 1;
+    }
+    i++;
+  }
+  return order;
 }
 
 export const MAX_VOICES = 4;

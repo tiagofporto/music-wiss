@@ -850,3 +850,103 @@ select {
     grid-column: 1 / -1;
   }
 }
+
+/* ---------------------------------------------------------------- expressão */
+
+.expr-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 92px;
+  z-index: 29;
+  transform: translateX(-50%);
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 14px;
+  padding: 10px 12px;
+  width: max-content;
+  max-width: min(780px, calc(100vw - 24px));
+  border-radius: 16px;
+  background: var(--dock);
+  color: var(--dock-ink);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 28%);
+}
+
+.expr-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.expr-label {
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--dock-muted);
+}
+
+.expr-panel button {
+  min-width: 34px;
+  height: 38px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.expr-panel button:hover {
+  background: rgb(255 255 255 / 8%);
+}
+
+.expr-panel button.on {
+  background: var(--dock-active);
+  color: #1b1b1b;
+}
+
+.expr-panel .smufl.dyn {
+  font-size: 28px;
+  margin-top: 4px;
+}
+
+.expr-panel .smufl.art {
+  font-size: 24px;
+}
+
+.expr-panel .text-btn small {
+  color: var(--dock-muted);
+  font-size: 10px;
+}
+
+.expr-panel button.on small {
+  color: inherit;
+}
+
+.text-entry {
+  position: absolute;
+  z-index: 5;
+  transform: translateX(-50%);
+  width: 110px;
+  padding: 3px 8px;
+  border: 2px solid var(--accent);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  font: 14px var(--font-ui);
+  text-align: center;
+  outline: none;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+}
+
+.text-entry[data-kind='chordSymbol'] {
+  font-weight: 700;
+}

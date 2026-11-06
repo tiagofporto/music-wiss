@@ -1,8 +1,8 @@
 import { Fraction } from './fraction';
 import { decompose, durationValue } from './duration';
 import type { Duration } from './duration';
-import type { ChordEvent, MusicEvent, Note, Score, Staff, Tuplet } from './score';
-import { allStaves, effectiveTimeSignature, emptyMeasure, eventValue, MAX_VOICES, measureCapacity, newId } from './score';
+import type { ChordEvent, Marks, MusicEvent, Note, Score, Staff, Tuplet } from './score';
+import { allStaves, cloneMarks, effectiveTimeSignature, emptyMeasure, eventValue, MAX_VOICES, measureCapacity, newId } from './score';
 
 /**
  * Visão "lógica" de uma voz: a sequência de notas como o usuário pensa nelas,
@@ -19,6 +19,7 @@ export interface LogicalEvent {
   tuplet?: Tuplet;
   placeholder?: boolean;
   auto?: boolean;
+  marks?: Marks;
 }
 
 export function logicalLength(e: { duration: Duration; tuplet?: Tuplet }): Fraction {
@@ -45,6 +46,7 @@ export function readLogical(staff: Staff, voiceIndex = 0): LogicalEvent[] {
         notes: e.kind === 'chord' ? cloneNotes(e.notes) : [],
       };
       if (e.tuplet) ev.tuplet = { ...e.tuplet };
+      if (e.marks) ev.marks = cloneMarks(e.marks);
       if (e.kind === 'rest' && e.placeholder) ev.placeholder = true;
       if (e.kind === 'rest' && e.auto) ev.auto = true;
       out.push(ev);
@@ -111,6 +113,7 @@ export function writeLogical(score: Score, staff: Staff, events: LogicalEvent[],
         ev.kind === 'rest'
           ? { kind: 'rest', id: ev.id, duration: ev.duration, tuplet: { ...ev.tuplet }, ...(ev.placeholder ? { placeholder: true } : {}) }
           : { kind: 'chord', id: ev.id, duration: ev.duration, tuplet: { ...ev.tuplet }, notes: cloneNotes(ev.notes) };
+      if (ev.marks) e.marks = cloneMarks(ev.marks);
       ensure(mi).voices[voiceIndex].events.push(e);
       used = used.add(ev.length);
       advanceIfFull();
@@ -207,12 +210,14 @@ export function padTo(events: LogicalEvent[], time: Fraction): void {
 function makePiece(ev: LogicalEvent, d: Duration, first: boolean, last: boolean): MusicEvent {
   const id = first ? ev.id : newId('f');
   const fragmentOf = first ? undefined : ev.id;
-  if (ev.kind === 'rest') return { kind: 'rest', id, duration: d, ...(fragmentOf ? { fragmentOf } : {}), ...(ev.auto ? { auto: true } : {}) };
+  const marks = first && ev.marks ? { marks: cloneMarks(ev.marks) } : {};
+  if (ev.kind === 'rest') return { kind: 'rest', id, duration: d, ...marks, ...(fragmentOf ? { fragmentOf } : {}), ...(ev.auto ? { auto: true } : {}) };
   const chord: ChordEvent = {
     kind: 'chord',
     id,
     duration: d,
     notes: ev.notes.map((n) => ({ ...n, pitch: { ...n.pitch }, id: first ? n.id : newId('n'), tieToNext: last ? n.tieToNext : true })),
+    ...marks,
   };
   if (fragmentOf) chord.fragmentOf = fragmentOf;
   return chord;

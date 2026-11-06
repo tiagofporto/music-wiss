@@ -1,8 +1,9 @@
 import { Fraction } from '../model/fraction';
 import type { DurationType } from '../model/duration';
 import type { Clef } from '../model/pitch';
-import type { MusicEvent, Part, Score } from '../model/score';
-import { effectiveKey, effectiveTimeSignature, eventValue, measureCapacity } from '../model/score';
+import type { Articulation, MusicEvent, Part, Score } from '../model/score';
+import { parseChordSymbol } from '../model/chords';
+import { barMark, effectiveKey, effectiveTimeSignature, eventValue, measureCapacity } from '../model/score';
 
 /**
  * Exporta a partitura em MusicXML 4.0 (score-partwise), o formato aberto que
@@ -61,6 +62,8 @@ function partXml(score: Score, part: Part, divisions: number): string {
   const out: string[] = [];
   // notas ligadas da nota anterior, por pauta+voz, para escrever o "stop"
   const tiedFrom = new Map<string, Set<string>>();
+  // a sílaba anterior de cada voz terminou com hífen?
+  const lyricState = new Map<string, boolean>();
 
   for (let mi = 0; mi < measureCount; mi++) {
     const ts = effectiveTimeSignature(score, mi);
@@ -83,6 +86,17 @@ function partXml(score: Score, part: Part, divisions: number): string {
       });
       const tr = transposeXml(part.transposition);
       if (tr) attrs.push(tr);
+    }
+    // repetição e casa abrindo o compasso
+    const bar = barMark(score, mi);
+    const prevBar = mi > 0 ? barMark(score, mi - 1) : null;
+    const endingStarts = bar.ending && prevBar?.ending !== bar.ending;
+    if (bar.repeatStart || endingStarts) {
+      body.push(
+        `<barline location="left">${bar.repeatStart ? '<bar-style>heavy-light</bar-style>' : ''}` +
+          `${endingStarts ? `<ending number="${bar.ending}" type="start">${bar.ending}.</ending>` : ''}` +
+          `${bar.repeatStart ? '<repeat direction="forward"/>' : ''}</barline>`,
+      );
     }
     if (attrs.length) body.push(`<attributes>${attrs.join('')}</attributes>`);
 
@@ -110,7 +124,8 @@ function partXml(score: Score, part: Part, divisions: number): string {
 
         const tieKey = `${si}:${vi}`;
         voice.events.forEach((e, ei) => {
-          body.push(noteXml(e, ei, voice.events, dur, voiceNo, staffXml, tiedFrom, tieKey));
+          body.push(directionsXml(e, voiceNo, staffXml));
+          body.push(noteXml(e, ei, voice.events, dur, voiceNo, staffXml, tiedFrom, tieKey, lyricState));
           filled = filled.add(eventValue(e));
         });
         // completa vozes curtas para o "backup" seguinte voltar ao início certo
@@ -118,7 +133,17 @@ function partXml(score: Score, part: Part, divisions: number): string {
       });
     });
 
-    if (mi === measureCount - 1) body.push(`<barline location="right"><bar-style>light-heavy</bar-style></barline>`);
+    const nextBar = barMark(score, mi + 1);
+    const endingStops = bar.ending && (nextBar.ending !== bar.ending || mi === measureCount - 1);
+    if (bar.repeatEnd || endingStops || mi === measureCount - 1) {
+      // a casa 1 fecha com traço para baixo; a 2 normalmente fica aberta
+      const endingType = bar.ending === 1 || bar.repeatEnd ? 'stop' : 'discontinue';
+      body.push(
+        `<barline location="right">${bar.repeatEnd || mi === measureCount - 1 ? '<bar-style>light-heavy</bar-style>' : ''}` +
+          `${endingStops ? `<ending number="${bar.ending}" type="${endingType}"/>` : ''}` +
+          `${bar.repeatEnd ? '<repeat direction="backward"/>' : ''}</barline>`,
+      );
+    }
     out.push(`<measure number="${mi + 1}">${body.join('')}</measure>`);
   }
   return out.join('\n');
@@ -133,7 +158,21 @@ function noteXml(
   staffXml: string,
   tiedFrom: Map<string, Set<string>>,
   tieKey: string,
+  lyricState: Map<string, boolean>,
 ): string {
+  const marks = e.marks;
+  const arts = marks?.articulations ?? [];
+  const artXml = arts.filter((a) => a !== 'fermata').map((a) => ART_XML[a]).join('');
+  const markNotations = `${artXml ? `<articulations>${artXml}</articulations>` : ''}${arts.includes('fermata') ? '<fermata type="upright"/>' : ''}`;
+  let lyricXml = '';
+  if (marks?.lyric && e.kind === 'chord') {
+    const cont = marks.lyric.endsWith('-');
+    const prev = lyricState.get(tieKey) ?? false;
+    const syllabic = prev ? (cont ? 'middle' : 'end') : cont ? 'begin' : 'single';
+    const textValue = cont ? marks.lyric.slice(0, -1) : marks.lyric;
+    lyricXml = `<lyric number="1"><syllabic>${syllabic}</syllabic><text>${esc(textValue)}</text></lyric>`;
+    lyricState.set(tieKey, cont);
+  }
   const d = dur(eventValue(e));
   const type = `<type>${TYPE[e.duration.type]}</type>${'<dot/>'.repeat(e.duration.dots)}`;
   const tm = e.tuplet ? `<time-modification><actual-notes>${e.tuplet.actual}</actual-notes><normal-notes>${e.tuplet.normal}</normal-notes></time-modification>` : '';
@@ -151,7 +190,8 @@ function noteXml(
     const t = tupletMark();
     // pausas provisórias das vozes 2–4 saem invisíveis, como no editor
     const hidden = e.auto && voiceNo % 4 !== 1 ? ' print-object="no"' : '';
-    return `<note${hidden}><rest/><duration>${d}</duration><voice>${voiceNo}</voice>${type}${tm}${staffXml}${t ? `<notations>${t}</notations>` : ''}</note>`;
+    const n = `${t}${arts.includes('fermata') ? '<fermata type="upright"/>' : ''}`;
+    return `<note${hidden}><rest/><duration>${d}</duration><voice>${voiceNo}</voice>${type}${tm}${staffXml}${n ? `<notations>${n}</notations>` : ''}</note>`;
   }
 
   const prevTied = tiedFrom.get(tieKey) ?? new Set<string>();
@@ -162,15 +202,45 @@ function noteXml(
     const start = n.tieToNext;
     if (start) nextTied.add(id);
     const ties = `${stop ? '<tie type="stop"/>' : ''}${start ? '<tie type="start"/>' : ''}`;
-    const notations = [stop ? '<tied type="stop"/>' : '', start ? '<tied type="start"/>' : '', ni === 0 ? tupletMark() : ''].join('');
+    const notations = [stop ? '<tied type="stop"/>' : '', start ? '<tied type="start"/>' : '', ni === 0 ? tupletMark() : '', ni === 0 ? markNotations : ''].join('');
     const alter = n.pitch.alter ? `<alter>${n.pitch.alter}</alter>` : '';
     return (
       `<note>${ni > 0 ? '<chord/>' : ''}<pitch><step>${n.pitch.step}</step>${alter}<octave>${n.pitch.octave}</octave></pitch>` +
-      `<duration>${d}</duration>${ties}<voice>${voiceNo}</voice>${type}${tm}${staffXml}${notations ? `<notations>${notations}</notations>` : ''}</note>`
+      `<duration>${d}</duration>${ties}<voice>${voiceNo}</voice>${type}${tm}${staffXml}${notations ? `<notations>${notations}</notations>` : ''}${ni === 0 ? lyricXml : ''}</note>`
     );
   });
   tiedFrom.set(tieKey, nextTied);
   return notes.join('');
+}
+
+const ART_XML: Record<Exclude<Articulation, 'fermata'>, string> = {
+  staccato: '<staccato/>',
+  staccatissimo: '<staccatissimo/>',
+  tenuto: '<tenuto/>',
+  accent: '<accent/>',
+  marcato: '<strong-accent type="up"/>',
+};
+
+const STEP_ALTER = (a: number) => (a ? `<root-alter>${a}</root-alter>` : '');
+
+/** Dinâmica e cifra vêm antes da nota, como <direction> e <harmony>. */
+function directionsXml(e: MusicEvent, voiceNo: number, staffXml: string): string {
+  const m = e.marks;
+  if (!m) return '';
+  let out = '';
+  if (m.chordSymbol) {
+    const c = parseChordSymbol(m.chordSymbol);
+    if (c) {
+      const bass = c.bass ? `<bass><bass-step>${c.bass.step}</bass-step>${c.bass.alter ? `<bass-alter>${c.bass.alter}</bass-alter>` : ''}</bass>` : '';
+      out += `<harmony><root><root-step>${c.root.step}</root-step>${STEP_ALTER(c.root.alter)}</root><kind text="${esc(c.suffix)}">${c.kind}</kind>${bass}${staffXml}</harmony>`;
+    } else {
+      out += `<direction placement="above"><direction-type><words>${esc(m.chordSymbol)}</words></direction-type><voice>${voiceNo}</voice>${staffXml}</direction>`;
+    }
+  }
+  if (m.dynamic) {
+    out += `<direction placement="below"><direction-type><dynamics><${m.dynamic}/></dynamics></direction-type><voice>${voiceNo}</voice>${staffXml}</direction>`;
+  }
+  return out;
 }
 
 export function exportMusicXml(score: Score): string {

@@ -4,16 +4,17 @@ import type { Duration, DurationType } from '../model/duration';
 import { decompose, decomposeApprox, durationValue } from '../model/duration';
 import type { Fifths } from '../model/key';
 import type { Alter, Clef, Step } from '../model/pitch';
-import type { Note, Part, Score, TimeSignature, Tuplet } from '../model/score';
-import { emptyMeasure, INSTRUMENTS, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
+import type { Articulation, Dynamic, Marks, Note, Part, Score, TimeSignature, Tuplet } from '../model/score';
+import { chordText } from '../model/chords';
+import { DYNAMICS, emptyMeasure, setBarMark, tidyMarks, INSTRUMENTS, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
 import type { LogicalEvent } from '../model/sequence';
 import { normalizeMeasures, writeLogical } from '../model/sequence';
 
 /**
  * Lê MusicXML (score-partwise, .musicxml/.xml ou compactado .mxl) e monta uma
  * partitura do Music Wiss. Importa notas, pausas, acordes, até 4 vozes por pauta,
- * várias pautas, ligaduras, quiálteras, mudanças de compasso/tonalidade e andamento.
- * O que ainda não existe no editor (dinâmicas, letra, articulações...) é ignorado.
+ * várias pautas, ligaduras, quiálteras, mudanças de compasso/tonalidade, andamento,
+ * dinâmicas, articulações, letra (1ª estrofe), cifras, repetições e casas de 1ª/2ª vez.
  */
 
 export interface ImportResult {
@@ -27,6 +28,35 @@ const TYPES: Record<string, DurationType> = {
 };
 
 const STEPS = new Set(['C', 'D', 'E', 'F', 'G', 'A', 'B']);
+
+const ART_FROM_XML: Record<string, Articulation> = {
+  staccato: 'staccato',
+  staccatissimo: 'staccatissimo',
+  spiccato: 'staccatissimo',
+  tenuto: 'tenuto',
+  accent: 'accent',
+  'strong-accent': 'marcato',
+};
+
+/** Marcas de uma <note>: articulações, fermata e letra (estrofe 1). */
+function noteMarks(el: Element): Marks {
+  const marks: Marks = {};
+  const arts: Articulation[] = [];
+  for (const n of children(el, 'notations')) {
+    for (const a of children(n, 'articulations')) {
+      for (const x of Array.from(a.children)) if (ART_FROM_XML[x.tagName]) arts.push(ART_FROM_XML[x.tagName]);
+    }
+    if (child(n, 'fermata')) arts.push('fermata');
+  }
+  if (arts.length) marks.articulations = arts;
+  const lyric = children(el, 'lyric').find((l) => (l.getAttribute('number') ?? '1') === '1') ?? children(el, 'lyric')[0];
+  const t = lyric ? children(lyric, 'text').map((x) => x.textContent ?? '').join('').trim() : '';
+  if (t) {
+    const syl = text(lyric!, 'syllabic');
+    marks.lyric = syl === 'begin' || syl === 'middle' ? `${t}-` : t;
+  }
+  return marks;
+}
 
 /** Abre .mxl (zip) ou texto MusicXML. */
 export function readMusicXmlFile(name: string, data: Uint8Array): string {
@@ -150,7 +180,11 @@ export function importMusicXml(xml: string): ImportResult {
     let key: Fifths = 0;
     let measureStart = Fraction.ZERO;
     const tupletGroups = new Map<string, { tuplet: Tuplet; left: number }>();
+    // dinâmica/cifra lidas antes da nota, esperando a próxima nota da pauta
+    const pending = Array.from({ length: staves }, () => ({} as Marks));
+    const staffOf = (el: Element) => Math.min(staves, Math.max(1, num(el, 'staff') ?? 1)) - 1;
 
+    let openEnding: { n: 1 | 2; from: number } | null = null;
     measures.forEach((mEl, mi) => {
       let pos = Fraction.ZERO; // posição dentro do compasso
       let maxPos = Fraction.ZERO;
@@ -171,8 +205,47 @@ export function importMusicXml(xml: string): ImportResult {
             }
             break;
           }
+          case 'barline': {
+            if (pi !== 0) break;
+            const loc = el.getAttribute('location') ?? 'right';
+            const rep = child(el, 'repeat')?.getAttribute('direction');
+            if (rep === 'forward') setBarMark(score, mi, { repeatStart: true });
+            if (rep === 'backward') setBarMark(score, mi, { repeatEnd: true });
+            const end = child(el, 'ending');
+            const n = Number((end?.getAttribute('number') ?? '').split(/[ ,]/)[0]);
+            if (end && loc === 'left' && end.getAttribute('type') === 'start') {
+              if (n === 1 || n === 2) openEnding = { n, from: mi };
+              else warnings.add('Casas além da 2ª vez foram ignoradas.');
+            }
+            if (end && loc === 'right' && end.getAttribute('type') !== 'start') {
+              if (openEnding) for (let k = openEnding.from; k <= mi; k++) setBarMark(score, k, { ending: openEnding.n });
+              openEnding = null;
+            }
+            break;
+          }
+          case 'harmony': {
+            const rootEl = child(el, 'root');
+            const step = text(rootEl, 'root-step');
+            if (!step) break;
+            const kindEl = child(el, 'kind');
+            const bassEl = child(el, 'bass');
+            const bassStep = text(bassEl, 'bass-step');
+            pending[staffOf(el)].chordSymbol = chordText(
+              { step, alter: num(rootEl, 'root-alter') ?? 0 },
+              kindEl?.textContent?.trim() ?? 'major',
+              kindEl?.getAttribute('text') ?? null,
+              bassStep ? { step: bassStep, alter: num(bassEl, 'bass-alter') ?? 0 } : undefined,
+            );
+            break;
+          }
           case 'direction':
           case 'sound': {
+            if (el.tagName === 'direction') {
+              const dyn = el.getElementsByTagName('dynamics')[0];
+              const name = dyn?.children[0]?.tagName as Dynamic | undefined;
+              if (name && DYNAMICS.includes(name)) pending[staffOf(el)].dynamic = name;
+              else if (name) warnings.add('Algumas dinâmicas incomuns foram ignoradas.');
+            }
             const snd = el.tagName === 'sound' ? el : el.getElementsByTagName('sound')[0];
             const tempo = snd ? Number(snd.getAttribute('tempo')) : NaN;
             if (!tempoSet && tempo > 0) {
@@ -269,6 +342,8 @@ export function importMusicXml(xml: string): ImportResult {
               const invisible = !note && el.getAttribute('print-object') === 'no';
               const exact = duration && (tuplet ? true : durationValue(duration).eq(length));
               const figures = exact ? [duration!] : decomposeApprox(length);
+              const marks = tidyMarks({ ...pending[staffNo], ...noteMarks(el) });
+              pending[staffNo] = {};
               figures.forEach((d, fi) => {
                 const last = fi === figures.length - 1;
                 const ev: LogicalEvent = {
@@ -279,6 +354,7 @@ export function importMusicXml(xml: string): ImportResult {
                   notes: note ? [{ ...note, id: newId('n'), pitch: { ...note.pitch }, tieToNext: last ? note.tieToNext : true }] : [],
                   ...(tuplet ? { tuplet } : {}),
                   ...(invisible ? { auto: true } : {}),
+                  ...(fi === 0 && marks ? { marks } : {}),
                 };
                 vb.events.push(ev);
                 lastEvent.set(voiceKey, ev);

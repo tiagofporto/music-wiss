@@ -63,6 +63,9 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Espaço', 'Toca / para'],
   ['Ctrl + Z / Ctrl + Y', 'Desfaz / refaz'],
   ['Ctrl + K', 'Paleta de comandos'],
-  ['Ctrl + O / Ctrl + S', 'Abre (MusicXML, .mxl, .wiss.json) / salva'],
+  ['Ctrl + O / Ctrl + S', 'Abre (MusicXML, MIDI, PDF, foto, .wiss.json) / salva'],
+  ['M', 'Marcar por cima da partitura (de novo: voltar a editar)'],
+  ['V P R T S E', 'Ao marcar: mover, caneta, marca-texto, texto, selo, borracha'],
+  ['Delete / + − / setas', 'Ao marcar, com algo selecionado: apaga / tamanho / ajusta a posição'],
   ['?', 'Esta lista'],
 ];

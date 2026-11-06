@@ -9,7 +9,7 @@ import type { Step } from '../src/model/pitch';
 import { pitch } from '../src/model/pitch';
 import { readLogical } from '../src/model/sequence';
 import type { Annotation } from '../src/annotate/annotations';
-import { annotationsSvg, hits, pathData, sanitizeAnnotations, simplify } from '../src/annotate/annotations';
+import { annotationsSvg, bounds, hitIndex, hits, pathData, resize, sanitizeAnnotations, simplify, stampTakesColor, translate } from '../src/annotate/annotations';
 import type { Transcription } from '../src/ai/transcription';
 import { parseVoice, transcriptionToScore } from '../src/ai/transcription';
 
@@ -156,5 +156,41 @@ describe('transcrição da IA', () => {
 
   it('recusa transcrição vazia', () => {
     expect(() => transcriptionToScore(base)).toThrow(/vazia/);
+  });
+});
+
+describe('mover marcações e selos', () => {
+  const pen: Annotation = { kind: 'pen', color: '#e4572e', width: 0.004, points: [0.1, 0.1, 0.3, 0.2] };
+  const stamp: Annotation = { kind: 'stamp', symbol: '→', color: '#2e6fe4', x: 0.5, y: 0.5, size: 0.04 };
+
+  it('desloca traço, texto e selo', () => {
+    expect(translate(pen, 0.1, -0.05)).toMatchObject({ points: [0.2, 0.05, 0.4, 0.15] });
+    expect(translate(stamp, 0.1, 0.1)).toMatchObject({ x: 0.6, y: 0.6 });
+    expect(pen.points).toEqual([0.1, 0.1, 0.3, 0.2]); // o original não muda
+  });
+
+  it('acha a marcação de cima e a caixa em volta', () => {
+    const over: Annotation = { ...stamp, symbol: '⚠️', x: 0.2, y: 0.15 };
+    expect(hitIndex([pen, over], 0.2, 0.15)).toBe(1);
+    expect(hitIndex([pen, over], 0.9, 0.9)).toBe(-1);
+    expect(bounds(stamp)).toEqual([0.48, 0.48, 0.52, 0.52]);
+  });
+
+  it('muda o tamanho com limites', () => {
+    expect((resize(stamp, 2) as typeof stamp).size).toBe(0.08);
+    expect((resize(stamp, 100) as typeof stamp).size).toBe(0.25);
+  });
+
+  it('selos de forma pegam a cor; emojis não', () => {
+    expect(stampTakesColor('○')).toBe(true);
+    expect(stampTakesColor('♫')).toBe(true);
+    expect(stampTakesColor('⚠️')).toBe(false);
+    expect(annotationsSvg([stamp], 100)).toContain('text-anchor="middle"');
+  });
+
+  it('só aceita selos conhecidos vindos de arquivo', () => {
+    const list = sanitizeAnnotations([stamp, { ...stamp, symbol: '<script>' }, { ...stamp, size: 9 }]);
+    expect(list).toHaveLength(2);
+    expect((list[1] as typeof stamp).size).toBe(0.25);
   });
 });

@@ -90,8 +90,19 @@ O botão **Som** abre o painel de áudio:
   ficam guardadas neste navegador (Arquivo → Documentos recentes), e
   "Baixar com marcações" gera um PDF novo com tudo desenhado.
 - **Marcar a partitura**: botão **Marcar** (ou tecla M). As ferramentas são
-  caneta, marca-texto, texto e borracha, em 5 cores. Cada traço desfaz com
-  Ctrl+Z. As marcações são salvas com a partitura (arquivo e nuvem).
+  mover, caneta, marca-texto, texto, selo e borracha, em 5 cores. Cada traço
+  desfaz com Ctrl+Z. As marcações são salvas com a partitura (arquivo e nuvem).
+  - **Selos**: setas, formas (círculo, quadrado...) e notas musicais na cor
+    escolhida, mais emojis de atenção (⚠️ ❗ ⭐ 👀 🎵...).
+  - **Mover**: arraste qualquer marcação. Com ela selecionada: A−/A+ (ou −/+)
+    mudam o tamanho, as cores trocam a cor, Delete apaga e as setas ajustam.
+    Duplo clique num texto corrige o texto.
+  - **Lugar da barra**: no topo (padrão), à esquerda, à direita ou embaixo
+    (botão de layout na barra). A escolha fica guardada.
+  - **Limpar tudo** pergunta antes, diz quantas marcações serão apagadas e
+    pode ser desfeito.
+  - Ao voltar, o app reabre o documento que estava aberto no ponto em que você
+    parou, e o modo de marcação continua ligado se estava.
 - **Ler e analisar com IA** (precisa da nuvem): a IA lê até 4 páginas por vez
   e transcreve as notas. Também aponta o que conferir e sugere edições. A
   partitura transcrita abre editável e toca. Compassos que não fecham são

@@ -29,7 +29,7 @@ export function validateVoice(measure: Measure, ts: TimeSignature, voiceIndex = 
 }
 
 export function validateStaff(score: Score, staff: Staff, voiceIndex = 0): MeasureValidation[] {
-  return staff.measures.map((m, i) => validateVoice(m, effectiveTimeSignature(score, staff, i), voiceIndex));
+  return staff.measures.map((m, i) => validateVoice(m, effectiveTimeSignature(score, i), voiceIndex));
 }
 
 export function describeValidation(v: MeasureValidation): string {

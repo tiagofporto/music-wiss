@@ -123,8 +123,13 @@ a partitura sem distrações. O botão que toca o som agora se chama **Ouvir**.
   + − 0 ou Ctrl + roda do mouse. O zoom escolhido fica guardado.
 - **Virar página**: setas, PgDn/PgUp (pedais bluetooth de virar página mandam
   essas teclas). No fim da partitura, avança para a próxima do evento.
+- **Carregar**: abre no palco qualquer partitura do aparelho (PDF, foto,
+  MusicXML, MIDI ou .wiss.json), não só as criadas aqui. Pode escolher vários
+  arquivos de uma vez e passar com ‹ ›; arrastar um arquivo para a página
+  também funciona. PDF e foto aparecem como estão, com as marcações feitas em
+  Escrever; MusicXML e MIDI viram partitura e dá para ouvir.
 - **Eventos**: crie um evento (nome, data, local) e adicione as partituras do
-  repertório. Uma cópia de cada partitura fica salva no aparelho e funciona
+  repertório (as abertas ou **Carregar arquivos**, direto do aparelho). Uma cópia de cada partitura fica salva no aparelho e funciona
   sem internet; abra com um toque, reordene, tire, ou use **Atualizar** depois
   de editar. Os próximos eventos aparecem primeiro. **Editar** leva a
   partitura do evento para a aba Escrever.

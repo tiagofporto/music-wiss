@@ -67,6 +67,7 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Tocar: ↓ ↑ PgDn PgUp', 'Vira a página (funciona com pedal de virar página)'],
   ['Tocar: [ ]', 'Partitura anterior / próxima do evento'],
   ['Tocar: E', 'Abre os eventos (repertórios)'],
+  ['Tocar: Ctrl + O', 'Carrega partituras do aparelho (PDF, foto, MusicXML, MIDI)'],
   ['Ctrl + Z / Ctrl + Y', 'Desfaz / refaz'],
   ['Ctrl + K', 'Paleta de comandos'],
   ['Ctrl + O / Ctrl + S', 'Abre (MusicXML, MIDI, PDF, foto, .wiss.json) / salva'],

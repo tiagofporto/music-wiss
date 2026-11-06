@@ -1,3 +1,4 @@
+import type { Annotation } from '../annotate/annotations';
 import type { Score } from '../model/score';
 import { newId } from '../model/score';
 
@@ -10,13 +11,22 @@ import { newId } from '../model/score';
 
 export interface EventItem {
   id: string;
-  /** id da partitura (Score.id): a mesma partitura não entra duas vezes. */
+  /** Partitura: Score.id; PDF/foto: código do arquivo. O mesmo item não entra duas vezes. */
   scoreId: string;
   title: string;
-  score: Score;
+  /** Partitura editável (MusicXML, MIDI, .wiss.json ou a criada aqui). */
+  score?: Score;
+  /** PDF ou foto carregado como está, com as marcações que tinha. */
+  doc?: EventDoc;
   /** Largura da folha quando foi salva (as marcações à mão dependem dela). */
   layoutWidth: number;
   savedAt: number;
+}
+
+export interface EventDoc {
+  name: string;
+  bytes: Uint8Array;
+  marks: Record<number, Annotation[]>;
 }
 
 export interface PerformEvent {
@@ -36,11 +46,29 @@ export function createEvent(name: string, date = '', place = ''): PerformEvent {
 /** Põe a partitura no fim do evento, ou atualiza a cópia se ela já estiver lá. Devolve se era nova. */
 export function addScore(ev: PerformEvent, score: Score, layoutWidth: number, now = Date.now()): boolean {
   const copy = JSON.parse(JSON.stringify(score)) as Score;
-  const existing = ev.items.find((i) => i.scoreId === score.id);
+  return upsert(ev, { scoreId: score.id, title: score.title || 'Sem título', score: copy, layoutWidth }, now);
+}
+
+/** Põe um PDF ou foto no evento (o mesmo arquivo é atualizado, não duplicado). */
+export function addDoc(ev: PerformEvent, key: string, doc: EventDoc, now = Date.now()): boolean {
+  const title = doc.name.replace(/\.(pdf|jpe?g|png|webp)$/i, '') || 'Documento';
+  return upsert(ev, { scoreId: key, title, doc: { name: doc.name, bytes: doc.bytes, marks: JSON.parse(JSON.stringify(doc.marks ?? {})) }, layoutWidth: 1018 }, now);
+}
+
+/** Copia um item (de outro evento ou do palco) para este evento. */
+export function addItem(ev: PerformEvent, item: EventItem, now = Date.now()): boolean {
+  const { id: _id, savedAt: _s, ...rest } = item;
+  return upsert(ev, rest, now);
+}
+
+function upsert(ev: PerformEvent, data: Omit<EventItem, 'id' | 'savedAt'>, now: number): boolean {
+  const existing = ev.items.find((i) => i.scoreId === data.scoreId);
   if (existing) {
-    Object.assign(existing, { score: copy, title: score.title || 'Sem título', layoutWidth, savedAt: now });
+    delete existing.score;
+    delete existing.doc;
+    Object.assign(existing, data, { savedAt: now });
   } else {
-    ev.items.push({ id: newId('it'), scoreId: score.id, title: score.title || 'Sem título', score: copy, layoutWidth, savedAt: now });
+    ev.items.push({ id: newId('it'), ...data, savedAt: now });
   }
   ev.updatedAt = now;
   return !existing;

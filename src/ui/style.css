@@ -1330,3 +1330,13 @@ select {
 .feedback-body .rating button.on { color: #f2b01e; }
 @media (max-width: 760px) { .perform-mode .brand span { display: none; } }
 @media (max-width: 760px) { .perform-mode .topbar .icon-btn > span { display: none; } .perform-mode .topbar { gap: 8px; padding: 10px 12px; } }
+.perform-wrap.is-doc { background: transparent; border: 0; box-shadow: none; overflow: visible; }
+.perform-page { position: relative; margin: 0 auto 16px; background: #fff; box-shadow: var(--shadow); border-radius: 4px; overflow: hidden; }
+.perform-page canvas { display: block; }
+.perform-page .annot-layer { position: absolute; inset: 0; pointer-events: none; }
+.immersive .perform-page { margin-bottom: 8px; box-shadow: none; }
+.stage-error { padding: 40px; text-align: center; color: var(--muted); }
+.check-row { display: flex !important; align-items: center; gap: 8px; grid-template-columns: none; color: var(--ink-soft) !important; }
+.check-row input { width: 18px; height: 18px; accent-color: var(--accent); }
+.setlist-open .t { flex: 1; min-width: 0; }
+.setlist-open .kind { font-size: 11px; font-weight: 600; color: var(--muted); border: 1px solid var(--line); border-radius: 6px; padding: 1px 6px; }

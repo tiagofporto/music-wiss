@@ -1,5 +1,5 @@
 import './ui/style.css';
-import { Editor } from './editor/editor';
+import { Editor, TUPLET_NORMAL } from './editor/editor';
 import { WebAudioSynth } from './audio/synth';
 import { schedule } from './audio/sequencer';
 import { DURATION_NAMES_PT, DURATION_ORDER } from './model/duration';
@@ -8,8 +8,9 @@ import { keyName } from './model/key';
 import { pitchLabel, toMidi } from './model/pitch';
 import type { Step } from './model/pitch';
 import type { Score } from './model/score';
-import { createScore, effectiveTimeSignature, INSTRUMENTS } from './model/score';
-import { describeValidation, validateStaff } from './model/validation';
+import { createScore, effectiveKey, effectiveTimeSignature, INSTRUMENTS, MAX_VOICES, migrateScore } from './model/score';
+import { describeValidation, validateVoice } from './model/validation';
+import { Fraction } from './model/fraction';
 import { renderScore } from './render/renderer';
 import type { RenderResult, RenderTheme } from './render/renderer';
 import type { Command } from './ui/commands';
@@ -24,7 +25,7 @@ const THEME_KEY = 'music-wiss:theme';
 const editor = new Editor(loadSaved() ?? demoScore());
 const synth = new WebAudioSynth();
 let lastRender: RenderResult | null = null;
-let playing: { timers: number[]; index: number | null } | null = null;
+let playing: { timers: number[]; time: number | null } | null = null;
 
 // ---------------------------------------------------------------- DOM
 
@@ -73,7 +74,7 @@ app.innerHTML = `
       <div class="form-grid">
         <label class="wide">Título<input name="title" value="Sem título" /></label>
         <label>Compositor<input name="composer" /></label>
-        <label>Instrumento<select name="instrument">${INSTRUMENTS.map((i) => `<option value="${i.id}">${i.name}</option>`).join('')}</select></label>
+        <fieldset class="wide instruments"><legend>Instrumentos</legend>${INSTRUMENTS.map((i) => `<label class="pick"><input type="checkbox" name="instrument" value="${i.id}" ${i.id === 'piano' ? 'checked' : ''} /><span>${i.name}</span></label>`).join('')}</fieldset>
         <label>Fórmula de compasso<select name="time">${['4/4', '3/4', '2/4', '6/8', '9/8', '12/8', '5/4', '2/2'].map((t) => `<option>${t}</option>`).join('')}</select></label>
         <label>Tonalidade<select name="key">${Array.from({ length: 15 }, (_, i) => i - 7).map((f) => `<option value="${f}" ${f === 0 ? 'selected' : ''}>${keyName(f as Fifths)}</option>`).join('')}</select></label>
         <label>Andamento (semínima)<input name="tempo" type="number" value="96" min="20" max="300" /></label>
@@ -130,10 +131,12 @@ function render() {
   const width = scoreEl.clientWidth || 900;
   lastRender = renderScore(scoreEl, score, {
     width,
-    selected: editor.cursor > 0 ? editor.cursor - 1 : null,
-    playing: playing?.index ?? null,
-    cursor: editor.cursor,
-    showCursor: editor.inputMode && !playing,
+    selection: playing ? null : (() => {
+      const r = editor.range();
+      return r ? { pos: editor.pos, from: r[0], to: r[1] } : null;
+    })(),
+    playingTime: playing?.time ?? null,
+    cursor: editor.inputMode && !playing ? { pos: editor.pos, index: editor.cursor } : null,
     theme: renderTheme(),
   });
   if (lastRender.cursor) {
@@ -167,33 +170,30 @@ function renderDock() {
     <button data-act="natural" class="${alter === 0 && sel?.kind === 'chord' ? 'on' : ''}" title="Natural"><span class="smufl">${GLYPH.natural}</span></button>
     <button data-act="sharp" class="${alter === 1 ? 'on' : ''}" title="Sustenido (+)"><span class="smufl">${GLYPH.sharp}</span><small>+</small></button>
     <button data-act="tie" class="${sel?.notes.length && sel.notes.every((n) => n.tieToNext) ? 'on' : ''}" title="Ligadura (T)"><span class="smufl">${GLYPH.tie}</span><small>T</small></button>
+    <button data-act="tuplet" title="Tercina (Shift+3)"><span class="tuplet-ico">3</span><small>⇧3</small></button>
+    <span class="sep"></span>
+    <div class="voices" role="group" aria-label="Voz">${Array.from({ length: MAX_VOICES }, (_, v) => `<button data-voice="${v}" class="voice v${v} ${editor.pos.voiceIndex === v ? 'on' : ''}" title="Voz ${v + 1} (Alt+${v + 1})">${v + 1}</button>`).join('')}</div>
   `;
 }
 
 function renderStatus() {
-  const staff = editor.staff;
   const score = editor.score;
-  const validations = validateStaff(score, staff);
-  const { measure } = cursorMeasure();
-  const v = validations[measure];
-  const ts = effectiveTimeSignature(score, staff, measure);
-  const sel = editor.selected();
-  const selText = sel ? (sel.kind === 'rest' ? 'Pausa' : sel.notes.map((n) => pitchLabel(n.pitch)).join(' + ')) : '—';
+  const measure = editor.cursorMeasure();
+  const ts = effectiveTimeSignature(score, measure);
+  const m = editor.staff.measures[measure];
+  const v = m ? validateVoice(m, ts, editor.pos.voiceIndex) : null;
+  const evs = editor.selectedEvents();
+  const sel = evs.length === 1 ? evs[0] : null;
+  const selText = evs.length > 1
+    ? `${evs.length} eventos`
+    : sel ? (sel.kind === 'rest' ? (sel.placeholder ? 'Espaço da quiáltera' : 'Pausa') : sel.notes.map((n) => pitchLabel(n.pitch)).join(' + ')) : '—';
+  const part = score.parts[editor.pos.partIndex];
+  const staffName = part.staves.length > 1 ? ` · pauta ${editor.pos.staffIndex + 1}` : '';
   statusEl.innerHTML = `
     <span class="chip"><span class="led ${v?.state ?? ''}"></span>Compasso <b>${measure + 1}</b> · ${ts.beats}/${ts.beatType} · ${v ? describeValidation(v) : ''}</span>
-    <span class="chip">Selecionado <b>${selText}</b>${sel ? ` · ${DURATION_NAMES_PT[sel.duration.type]}${sel.duration.dots ? ' pontuada' : ''}` : ''}</span>
-    <span class="chip">${keyName(score.keyFifths)} · ${score.parts[0].name}</span>
+    <span class="chip">Selecionado <b>${selText}</b>${sel ? ` · ${DURATION_NAMES_PT[sel.duration.type]}${sel.duration.dots ? ' pontuada' : ''}${sel.tuplet ? ` (${sel.tuplet.actual}:${sel.tuplet.normal})` : ''}` : ''}</span>
+    <span class="chip"><b>${part.name}</b>${staffName} · voz ${editor.pos.voiceIndex + 1} · ${keyName(effectiveKey(score, measure))}</span>
   `;
-}
-
-/** Compasso onde está o cursor: o do próximo evento, ou o último compasso (sempre livre ou incompleto). */
-function cursorMeasure(): { measure: number } {
-  const events = editor.events();
-  const ms = editor.staff.measures;
-  const next = events[editor.cursor];
-  if (!next) return { measure: ms.length - 1 };
-  const i = ms.findIndex((m) => m.voices[0]?.events.some((e) => e.id === next.id));
-  return { measure: Math.max(0, i) };
 }
 
 // ---------------------------------------------------------------- áudio
@@ -201,27 +201,28 @@ function cursorMeasure(): { measure: number } {
 function sound(pitches: { step: Step; alter: number; octave: number }[] | undefined) {
   if (!pitches?.length || playing) return;
   const t = synth.now();
-  const transp = editor.score.parts[0].transposition;
+  const transp = editor.score.parts[editor.pos.partIndex].transposition;
   for (const p of pitches) synth.play(toMidi(p as never) + transp, t, 0.45, 0.7);
 }
 
 function togglePlay() {
   if (playing) return stopPlayback();
-  const from = editor.cursor >= editor.events().length ? 0 : editor.cursor;
-  const { notes, onsets, total } = schedule(editor.score, from);
+  const atEnd = editor.cursor >= editor.events().length;
+  const from = atEnd ? Fraction.ZERO : editor.cursorTime();
+  const { notes, steps, total } = schedule(editor.score, from);
   if (!notes.length) return toast('Nada para tocar ainda');
   const t0 = synth.now() + 0.08;
   for (const n of notes) synth.play(n.midi, t0 + n.start, n.duration * 0.95);
-  playing = { timers: [], index: null };
-  onsets.forEach((o, i) => {
-    if (i < from) return;
-    playing!.timers.push(window.setTimeout(() => {
-      if (!playing) return;
-      playing.index = i;
+  const state = { timers: [] as number[], time: null as number | null };
+  playing = state;
+  for (const step of steps) {
+    state.timers.push(window.setTimeout(() => {
+      if (playing !== state) return;
+      state.time = step.time;
       render();
-    }, (o + 0.08) * 1000));
-  });
-  playing.timers.push(window.setTimeout(stopPlayback, (total + 0.4) * 1000));
+    }, (step.at + 0.08) * 1000));
+  }
+  state.timers.push(window.setTimeout(stopPlayback, (total + 0.4) * 1000));
   updatePlayButton();
   render();
 }
@@ -266,39 +267,70 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return exportJson();
   }
+  if (mod && e.key.toLowerCase() === 'a') {
+    e.preventDefault();
+    return editor.selectAll();
+  }
+  if (mod && e.key.toLowerCase() === 'c') {
+    const n = editor.copy();
+    if (n) toast(`${n} ${n === 1 ? 'evento copiado' : 'eventos copiados'}`);
+    return e.preventDefault();
+  }
+  if (mod && e.key.toLowerCase() === 'x') {
+    const n = editor.cut();
+    if (n) toast(`${n} ${n === 1 ? 'evento recortado' : 'eventos recortados'}`);
+    return e.preventDefault();
+  }
+  if (mod && e.key.toLowerCase() === 'v') {
+    if (!editor.paste()) toast('Nada copiado ainda');
+    return e.preventDefault();
+  }
 
   const key = e.key;
   const lower = key.toLowerCase();
+  const digit = /^Digit(\d)$/.exec(e.code)?.[1];
   let handled = true;
 
-  if (lower === 'n' && !mod) editor.toggleInputMode();
-  else if (key === 'Escape') editor.toggleInputMode(false);
-  else if (key === ' ') togglePlay();
+  // Alt + 1–4: voz | Shift + 2,3,5,6,7: quiálteras | Alt + ↑/↓: pauta
+  if (e.altKey && digit && Number(digit) >= 1 && Number(digit) <= MAX_VOICES) editor.setVoice(Number(digit) - 1);
+  else if (e.shiftKey && !mod && digit && TUPLET_NORMAL[Number(digit)]) tuplet(Number(digit));
+  else if (e.altKey && key === 'ArrowUp') editor.moveStaff(-1);
+  else if (e.altKey && key === 'ArrowDown') editor.moveStaff(1);
+  else if (lower === 'n' && !mod) editor.toggleInputMode();
+  else if (key === 'Escape') {
+    if (editor.hasRange()) editor.clearSelection();
+    else editor.toggleInputMode(false);
+  } else if (key === ' ') togglePlay();
   else if (key === '?') openOverlay('help');
   else if (DURATION_KEYS[key] && !mod) {
     if (editor.inputMode) editor.setDuration(DURATION_KEYS[key]);
     else editor.setSelectedDuration(DURATION_KEYS[key]);
   } else if (key === '.') editor.toggleDot();
   else if (key === '0' && editor.inputMode) editor.insertRest();
-  else if (LETTERS[lower] && !mod && editor.inputMode) {
+  else if (LETTERS[lower] && !mod && !e.altKey && editor.inputMode) {
     if (e.shiftKey) editor.addToChord(LETTERS[lower]);
     else editor.insertStep(LETTERS[lower]);
   } else if (key === '+' || key === '=') editor.shiftAlter(1);
   else if (key === '-' || key === '_') editor.shiftAlter(-1);
   else if (lower === 't' && !mod) editor.toggleTie();
-  else if (key === 'ArrowLeft') editor.moveCursor(-1);
-  else if (key === 'ArrowRight') editor.moveCursor(1);
+  else if (key === 'ArrowLeft') editor.moveCursor(-1, e.shiftKey);
+  else if (key === 'ArrowRight') editor.moveCursor(1, e.shiftKey);
   else if (key === 'ArrowUp') editor.transposeSelected(mod ? 'octave' : 'semitone', 1);
   else if (key === 'ArrowDown') editor.transposeSelected(mod ? 'octave' : 'semitone', -1);
   else if (key === 'Backspace') editor.deleteBackward();
   else if (key === 'Delete') editor.deleteForward();
   else if (key === '[') editor.stepDuration(-1);
   else if (key === ']') editor.stepDuration(1);
-  else if (key === 'Home') editor.setCursor(0);
-  else if (key === 'End') editor.setCursor(editor.events().length);
+  else if (key === 'Home') editor.setCursor(0, e.shiftKey);
+  else if (key === 'End') editor.setCursor(editor.events().length, e.shiftKey);
   else handled = false;
 
   if (handled) e.preventDefault();
+}
+
+function tuplet(n: number) {
+  const err = editor.insertTuplet(n);
+  if (err) toast(err);
 }
 
 // ---------------------------------------------------------------- paleta de comandos
@@ -315,6 +347,13 @@ function commands(): Command[] {
     { id: 'undo', label: 'Desfazer', hint: 'Ctrl Z', run: () => editor.undo() },
     { id: 'redo', label: 'Refazer', hint: 'Ctrl Y', run: () => editor.redo() },
     { id: 'tie', label: 'Ligadura de prolongamento', hint: 'T', run: () => editor.toggleTie() },
+    { id: 'copy', label: 'Copiar seleção', hint: 'Ctrl C', run: () => editor.copy() },
+    { id: 'cut', label: 'Recortar seleção', hint: 'Ctrl X', run: () => editor.cut() },
+    { id: 'paste', label: 'Colar no cursor', hint: 'Ctrl V', run: () => editor.paste() },
+    { id: 'all', label: 'Selecionar tudo (voz atual)', hint: 'Ctrl A', run: () => editor.selectAll() },
+    { id: 'staff-up', label: 'Ir para a pauta de cima', hint: 'Alt ↑', run: () => editor.moveStaff(-1) },
+    { id: 'staff-down', label: 'Ir para a pauta de baixo', hint: 'Alt ↓', run: () => editor.moveStaff(1) },
+    { id: 'remove-part', label: 'Remover o instrumento atual', run: () => editor.removePart() },
     { id: 'sharp', label: 'Sustenido', hint: '+', run: () => editor.setAlter(1) },
     { id: 'flat', label: 'Bemol', hint: '−', run: () => editor.setAlter(-1) },
     { id: 'natural', label: 'Bequadro (natural)', run: () => editor.setAlter(0) },
@@ -323,12 +362,23 @@ function commands(): Command[] {
   DURATION_ORDER.forEach((type, i) =>
     list.push({ id: `dur-${type}`, label: `Figura: ${DURATION_NAMES_PT[type]}`, hint: String(i + 1), run: () => (editor.inputMode ? editor.setDuration(type) : editor.setSelectedDuration(type)) }),
   );
-  for (let f = -7; f <= 7; f++) {
-    list.push({ id: `key${f}`, label: `Tonalidade: ${keyName(f as Fifths)}`, run: () => editor.mutate((s) => (s.keyFifths = f as Fifths)) });
+  for (let v = 0; v < MAX_VOICES; v++) {
+    list.push({ id: `voice${v}`, label: `Voz ${v + 1}`, hint: `Alt ${v + 1}`, run: () => editor.setVoice(v) });
   }
-  for (const t of ['4/4', '3/4', '2/4', '6/8', '9/8', '12/8', '5/4', '2/2']) {
+  const tupletNames: Record<number, string> = { 2: 'Duína', 3: 'Tercina', 4: 'Quartina', 5: 'Quintina', 6: 'Sextina', 7: 'Septina', 9: 'Nonina' };
+  for (const n of Object.keys(TUPLET_NORMAL).map(Number)) {
+    list.push({ id: `tuplet${n}`, label: `Quiáltera: ${tupletNames[n]} (${n}:${TUPLET_NORMAL[n]})`, hint: `Shift ${n}`, run: () => tuplet(n) });
+  }
+  const here = `a partir do compasso ${editor.cursorMeasure() + 1}`;
+  for (let f = -7; f <= 7; f++) {
+    list.push({ id: `key${f}`, label: `Tonalidade: ${keyName(f as Fifths)} (${here})`, run: () => editor.setKeyHere(f as Fifths) });
+  }
+  for (const t of ['4/4', '3/4', '2/4', '6/8', '9/8', '12/8', '5/4', '7/8', '2/2']) {
     const [beats, beatType] = t.split('/').map(Number);
-    list.push({ id: `ts${t}`, label: `Fórmula de compasso: ${t}`, run: () => editor.mutate((s) => (s.timeSignature = { beats, beatType })) });
+    list.push({ id: `ts${t}`, label: `Fórmula de compasso: ${t} (${here})`, run: () => editor.setTimeSignatureHere({ beats, beatType }) });
+  }
+  for (const inst of INSTRUMENTS) {
+    list.push({ id: `add-${inst.id}`, label: `Adicionar instrumento: ${inst.name}`, run: () => editor.addPart(inst.id) });
   }
   return list;
 }
@@ -409,7 +459,7 @@ async function importJson(file: File) {
   try {
     const data = JSON.parse(await file.text());
     if (data?.format !== 'music-wiss' || !data.score?.parts) throw new Error();
-    editor.load(data.score as Score);
+    editor.load(migrateScore(data.score as Score));
     toast('Partitura aberta');
   } catch {
     toast('Arquivo inválido');
@@ -419,7 +469,7 @@ async function importJson(file: File) {
 function loadSaved(): Score | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Score) : null;
+    return raw ? migrateScore(JSON.parse(raw) as Score) : null;
   } catch {
     return null;
   }
@@ -440,22 +490,37 @@ function autosave() {
 }
 
 function demoScore(): Score {
-  const score = createScore({ title: 'Primeira melodia', composer: 'Music Wiss', tempo: 100, timeSignature: { beats: 3, beatType: 4 }, keyFifths: 1 });
+  const score = createScore({ title: 'Primeira melodia', composer: 'Music Wiss', tempo: 92, timeSignature: { beats: 3, beatType: 4 }, keyFifths: 1, instrumentId: 'piano' });
   const ed = new Editor(score);
-  const melody: Array<[Step, '2' | '3' | '4', boolean?]> = [
-    ['D', '3'], ['G', '3'], ['A', '4'], ['B', '4'],
-    ['C', '3'], ['B', '3'], ['A', '3'],
-    ['G', '4'], ['A', '4'], ['B', '3'], ['D', '3', true],
-    ['G', '2'],
-  ];
-  for (const [step, d] of melody) {
-    ed.setDuration(DURATION_KEYS[d]);
-    ed.insertStep(step);
-  }
+  ed.toggleInputMode(true);
+  const notes = (list: Array<[Step | 'r', DurationKey]>) => {
+    for (const [step, d] of list) {
+      ed.setDuration(DURATION_KEYS[d]);
+      if (step === 'r') ed.insertRest();
+      else ed.insertStep(step);
+    }
+  };
+  // mão direita (com uma tercina no 3º compasso), começando no Ré4
   ed.setDuration('quarter');
-  ed.insertRest();
+  ed.insertPitch({ step: 'D', alter: 0, octave: 4 });
+  notes([ ['G', '3'], ['A', '4'], ['B', '4'], ['C', '3'], ['B', '3'], ['A', '3']]);
+  ed.setDuration('eighth');
+  ed.insertTuplet(3);
+  notes([['G', '4'], ['A', '4'], ['G', '4'], ['B', '3'], ['D', '3'], ['G', '2'], ['r', '3']]);
+  // mão esquerda: acordes em mínimas pontuadas
+  ed.moveStaff(1);
+  ed.setCursor(0);
+  for (const [root, third] of [['G', 'D'], ['C', 'E'], ['D', 'F'], ['G', 'D']] as Array<[Step, Step]>) {
+    ed.setDuration('half');
+    ed.toggleDot();
+    ed.insertStep(root);
+    ed.addToChord(third);
+  }
+  ed.moveStaff(-1); // sai da mão esquerda: as pausas provisórias do fim somem
   return ed.score;
 }
+
+type DurationKey = '1' | '2' | '3' | '4' | '5' | '6';
 
 // ---------------------------------------------------------------- eventos
 
@@ -469,10 +534,11 @@ window.addEventListener('keydown', onKey);
 window.addEventListener('resize', () => render());
 
 app.addEventListener('click', (e) => {
-  const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act], [data-dur], [data-cmd], [data-close]');
+  const el = (e.target as HTMLElement).closest<HTMLElement>('[data-act], [data-dur], [data-cmd], [data-close], [data-voice]');
   if (!el) return;
   if (el.dataset.close !== undefined) return closeOverlays();
   if (el.dataset.cmd) return runCommand(el.dataset.cmd);
+  if (el.dataset.voice) return editor.setVoice(Number(el.dataset.voice));
   if (el.dataset.dur) {
     const type = el.dataset.dur as (typeof DURATION_ORDER)[number];
     return editor.inputMode ? editor.setDuration(type) : editor.setSelectedDuration(type);
@@ -489,6 +555,7 @@ app.addEventListener('click', (e) => {
     case 'sharp': return editor.setAlter(1);
     case 'natural': return editor.setAlter(0);
     case 'tie': return editor.toggleTie();
+    case 'tuplet': return tuplet(3);
   }
 });
 
@@ -531,7 +598,7 @@ $<HTMLFormElement>('[data-overlay="new"] form').addEventListener('submit', (e) =
     createScore({
       title: String(f.get('title') || 'Sem título'),
       composer: String(f.get('composer') || ''),
-      instrumentId: String(f.get('instrument')),
+      instrumentIds: f.getAll('instrument').map(String).length ? f.getAll('instrument').map(String) : ['piano'],
       timeSignature: { beats, beatType },
       keyFifths: Number(f.get('key')) as Fifths,
       tempo: Number(f.get('tempo')) || 96,
@@ -565,10 +632,8 @@ scoreEl.addEventListener('mousedown', (e) => {
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
   const hit = lastRender.hits.find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
-  if (hit) {
-    editor.setCursor(hit.index + 1);
-    sound(editor.selected()?.notes.map((n) => n.pitch));
-  }
+  if (hit) editor.clickEvent(hit.pos, hit.index, e.shiftKey);
+  else editor.clearSelection();
 });
 
 // ---------------------------------------------------------------- início

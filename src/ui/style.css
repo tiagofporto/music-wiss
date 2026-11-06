@@ -500,7 +500,7 @@ select {
   color: var(--ink-soft);
 }
 
-.form-grid label.wide {
+.form-grid .wide {
   grid-column: 1 / -1;
 }
 
@@ -551,4 +551,100 @@ select {
 
 .toast.show {
   opacity: 1;
+}
+
+/* ---------- vozes e quiálteras ---------- */
+.dock .voices {
+  display: flex;
+  gap: 2px;
+}
+
+.dock .voice {
+  min-width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.dock .voice::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 3px;
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+  transform: translateX(-50%);
+  background: var(--vc);
+}
+
+.dock .voice.v0 { --vc: #ff6b3d; }
+.dock .voice.v1 { --vc: #3cc4ad; }
+.dock .voice.v2 { --vc: #e8b24a; }
+.dock .voice.v3 { --vc: #9b8cff; }
+
+.dock .voice.on {
+  background: color-mix(in srgb, var(--dock-ink) 16%, transparent);
+  color: var(--dock-ink);
+}
+
+.tuplet-ico {
+  font-family: var(--font-title);
+  font-style: italic;
+  font-weight: 600;
+  font-size: 18px;
+  border-top: 1.5px solid currentColor;
+  padding: 0 4px;
+  line-height: 1.1;
+}
+
+/* ---------- escolha de instrumentos ---------- */
+.instruments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.instruments legend {
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.form-grid .pick {
+  flex-direction: row;
+  align-items: center;
+  gap: 0;
+}
+
+.pick input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.pick span {
+  padding: 6px 11px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--chip);
+  color: var(--ink-soft);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pick input:checked + span {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--ink);
+}
+
+.pick input:focus-visible + span {
+  outline: 2px solid var(--accent);
 }

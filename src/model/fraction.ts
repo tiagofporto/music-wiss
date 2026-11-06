@@ -55,6 +55,9 @@ export class Fraction {
   lte(o: Fraction): boolean {
     return this.compare(o) <= 0;
   }
+  gte(o: Fraction): boolean {
+    return this.compare(o) >= 0;
+  }
   gt(o: Fraction): boolean {
     return this.compare(o) > 0;
   }

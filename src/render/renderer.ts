@@ -6,21 +6,29 @@ import {
   Formatter,
   Renderer,
   Stave,
+  StaveConnector,
   StaveNote,
   StaveTie,
+  Stem,
+  Tuplet,
   Voice,
 } from 'vexflow/bravura';
+import type { Fraction } from '../model/fraction';
 import type { MusicEvent, Score, Staff } from '../model/score';
-import { effectiveTimeSignature } from '../model/score';
+import { allStaves, effectiveKey, effectiveTimeSignature, eventValue, MAX_VOICES, measureCapacity, voiceLength } from '../model/score';
 import { VEX_DURATION } from '../model/duration';
 import { vexKey } from '../model/key';
-import type { Pitch } from '../model/pitch';
-import { validateStaff } from '../model/validation';
+import type { Clef, Pitch } from '../model/pitch';
+import { clefMiddle, diatonicIndex, fromDiatonicIndex } from '../model/pitch';
+import { measureStarts } from '../model/sequence';
+import { validateVoice } from '../model/validation';
+import type { Position } from '../editor/editor';
 
 /**
  * Motor de layout + desenho. O VexFlow cuida de hastes, barras de colcheia,
- * acidentes e glifos SMuFL (fonte Bravura); este módulo cuida do layout da
- * página: largura de cada compasso, quebra de linha e justificação.
+ * acidentes, quiálteras e glifos SMuFL (fonte Bravura); este módulo cuida do
+ * layout da página: sistemas com várias pautas, largura de cada compasso,
+ * quebra de linha e justificação.
  */
 
 export interface RenderTheme {
@@ -33,12 +41,11 @@ export interface RenderTheme {
 
 export interface RenderOptions {
   width: number;
-  /** índice lógico do evento selecionado (destacado) */
-  selected: number | null;
-  /** índice lógico do evento tocando agora */
-  playing: number | null;
-  cursor: number;
-  showCursor: boolean;
+  /** trecho selecionado (índices lógicos [from, to)) numa pauta/voz */
+  selection: { pos: Position; from: number; to: number } | null;
+  /** momento tocando agora, em semibreves desde o início */
+  playingTime: number | null;
+  cursor: { pos: Position; index: number } | null;
   theme: RenderTheme;
 }
 
@@ -48,83 +55,82 @@ export interface CursorBox {
   height: number;
 }
 
+export interface Hit {
+  pos: Position;
+  index: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface RenderResult {
   height: number;
   cursor: CursorBox | null;
   /** caixas de clique por evento lógico */
-  hits: Array<{ index: number; x: number; y: number; w: number; h: number }>;
+  hits: Hit[];
 }
 
-const STAVE_HEIGHT = 40; // altura das 5 linhas no VexFlow (espaço de 10px)
-const SYSTEM_GAP = 110;
-const TOP = 30;
-const MARGIN_X = 24;
-const MIN_MEASURE = 130;
+const STAFF_GAP = 82; // distância entre pautas do mesmo instrumento
+const PART_GAP = 100; // distância entre instrumentos
+const SYSTEM_EXTRA = 70; // espaço depois de cada sistema
+const TOP = 24;
+const MARGIN_X = 18;
+const MIN_MEASURE = 120;
+const VOICE_COLORS_ALPHA = ['', 'cc', 'cc', 'cc'];
 
-const VEX_CLEF = { treble: 'treble', bass: 'bass', alto: 'alto', tenor: 'tenor' } as const;
+const VEX_CLEF: Record<Clef, string> = { treble: 'treble', bass: 'bass', alto: 'alto', tenor: 'tenor' };
 
 function vexKeyOf(p: Pitch): string {
   const acc = { [-2]: 'bb', [-1]: 'b', 0: '', 1: '#', 2: '##' }[p.alter];
   return `${p.step.toLowerCase()}${acc}/${p.octave}`;
 }
 
-interface BuiltMeasure {
-  notes: StaveNote[];
-  voice: Voice;
-  /** índice lógico de cada nota */
-  logical: number[];
-  events: MusicEvent[];
-  emptyRest: boolean;
-}
-
-function buildMeasure(score: Score, staff: Staff, mi: number, logicalOf: Map<string, number>, theme: RenderTheme): BuiltMeasure {
-  const measure = staff.measures[mi];
-  const ts = effectiveTimeSignature(score, staff, mi);
-  const events = measure.voices[0]?.events ?? [];
-  const clef = VEX_CLEF[staff.clef];
-  const notes: StaveNote[] = [];
-  const logical: number[] = [];
-  const restKey = { treble: 'b/4', bass: 'd/3', alto: 'c/4', tenor: 'a/3' }[staff.clef];
-
-  for (const e of events) {
-    const base = { duration: VEX_DURATION[e.duration.type], dots: e.duration.dots, clef };
-    const note =
-      e.kind === 'rest'
-        ? new StaveNote({ ...base, keys: [restKey], type: 'r' })
-        : new StaveNote({ ...base, keys: sortedNotes(e).map((n) => vexKeyOf(n.pitch)), autoStem: true });
-    note.setStyle({ fillStyle: theme.ink, strokeStyle: theme.ink });
-    note.setLedgerLineStyle({ strokeStyle: theme.ink, lineWidth: 1.4 });
-    if (e.duration.dots) Dot.buildAndAttach([note], { all: true });
-    notes.push(note);
-    logical.push(logicalOf.get(e.fragmentOf ?? e.id) ?? -1);
-  }
-
-  let emptyRest = false;
-  if (notes.length === 0) {
-    const rest = new StaveNote({ keys: [restKey], duration: 'w', type: 'r', alignCenter: true, clef });
-    rest.setStyle({ fillStyle: theme.muted, strokeStyle: theme.muted });
-    notes.push(rest);
-    logical.push(-1);
-    emptyRest = true;
-  }
-
-  const voice = new Voice({ numBeats: ts.beats, beatValue: ts.beatType }).setMode(Voice.Mode.SOFT);
-  voice.addTickables(notes);
-  Accidental.applyAccidentals([voice], vexKey(score.keyFifths));
-  return { notes, voice, logical, events, emptyRest };
+/** Posição da pausa: no meio da pauta, ou deslocada para cima/baixo com várias vozes. */
+function restKey(clef: Clef, voiceIndex: number, multi: boolean): string {
+  const mid = diatonicIndex(clefMiddle(clef));
+  const shift = !multi ? 0 : voiceIndex % 2 === 0 ? 2 : -2;
+  return vexKeyOf(fromDiatonicIndex(mid + shift));
 }
 
 function sortedNotes(e: MusicEvent) {
   if (e.kind !== 'chord') return [];
-  return [...e.notes].sort((a, b) => a.pitch.octave * 7 + 'CDEFGAB'.indexOf(a.pitch.step) - (b.pitch.octave * 7 + 'CDEFGAB'.indexOf(b.pitch.step)));
+  return [...e.notes].sort((a, b) => diatonicIndex(a.pitch) - diatonicIndex(b.pitch));
 }
 
-/** Mapa id do evento → índice lógico (pedaços ligados apontam para o original). */
-function logicalIndex(staff: Staff): Map<string, number> {
+interface StaffRef {
+  staff: Staff;
+  partIndex: number;
+  staffIndex: number;
+}
+
+interface BuiltVoice {
+  voiceIndex: number;
+  notes: StaveNote[];
+  voice: Voice;
+  /** índice lógico de cada nota (-1 = pausa de compasso vazio) */
+  logical: number[];
+  events: Array<MusicEvent | null>;
+  /** início de cada nota, em semibreves desde o começo */
+  onsets: number[];
+  ends: number[];
+  tuplets: Tuplet[];
+  beams: Beam[];
+  full: boolean;
+}
+
+interface BuiltStaffMeasure {
+  ref: StaffRef;
+  voices: BuiltVoice[];
+}
+
+/** Mapa id do evento → índice lógico, por voz (pedaços ligados apontam para o original). */
+function logicalIndex(staff: Staff, voiceIndex: number): Map<string, number> {
   const map = new Map<string, number>();
   let i = 0;
   for (const m of staff.measures) {
-    for (const e of m.voices[0]?.events ?? []) {
+    for (const e of m.voices[voiceIndex]?.events ?? []) {
+      if (e.kind === 'rest' && e.filler) continue;
       if (e.fragmentOf && map.has(e.fragmentOf)) continue;
       map.set(e.id, i++);
     }
@@ -132,136 +138,353 @@ function logicalIndex(staff: Staff): Map<string, number> {
   return map;
 }
 
+type LogicalMaps = Map<Staff, Map<string, number>[]>;
+
+function buildStaffMeasure(
+  score: Score,
+  ref: StaffRef,
+  mi: number,
+  start: Fraction,
+  maps: LogicalMaps,
+  theme: RenderTheme,
+): BuiltStaffMeasure {
+  const { staff } = ref;
+  const measure = staff.measures[mi];
+  const ts = effectiveTimeSignature(score, mi);
+  const clef = VEX_CLEF[staff.clef];
+  const voicesWithContent = measure.voices.map((v, i) => (v.events.length ? i : -1)).filter((i) => i >= 0);
+  const multi = voicesWithContent.length > 1 || voicesWithContent.some((i) => i > 0);
+  const built: BuiltVoice[] = [];
+
+  for (let vi = 0; vi < Math.max(1, measure.voices.length); vi++) {
+    const events = measure.voices[vi]?.events ?? [];
+    if (!events.length && vi > 0) continue;
+    const notes: StaveNote[] = [];
+    const logical: number[] = [];
+    const evs: Array<MusicEvent | null> = [];
+    const onsets: number[] = [];
+    const ends: number[] = [];
+    const map = maps.get(staff)![vi];
+    let t = start;
+    const stemDir = multi ? (vi % 2 === 0 ? Stem.UP : Stem.DOWN) : undefined;
+    const ink = vi === 0 ? theme.ink : theme.ink + VOICE_COLORS_ALPHA[vi];
+
+    for (const e of events) {
+      const base = { duration: VEX_DURATION[e.duration.type], dots: e.duration.dots, clef };
+      const note =
+        e.kind === 'rest'
+          ? new StaveNote({ ...base, keys: [restKey(staff.clef, vi, multi)], type: 'r' })
+          : new StaveNote({ ...base, keys: sortedNotes(e).map((n) => vexKeyOf(n.pitch)), autoStem: stemDir === undefined, ...(stemDir !== undefined ? { stemDirection: stemDir } : {}) });
+      // pausas provisórias das vozes 2–4 ficam invisíveis (só ocupam o tempo)
+      const color = e.kind === 'rest' && e.auto && vi > 0 ? 'transparent' : e.kind === 'rest' && e.placeholder ? theme.muted : ink;
+      note.setStyle({ fillStyle: color, strokeStyle: color });
+      note.setLedgerLineStyle({ strokeStyle: theme.ink, lineWidth: 1.4 });
+      if (e.duration.dots) Dot.buildAndAttach([note], { all: true });
+      notes.push(note);
+      logical.push(map.get(e.fragmentOf ?? e.id) ?? -1);
+      evs.push(e);
+      onsets.push(t.toNumber());
+      t = t.add(eventValue(e));
+      ends.push(t.toNumber());
+    }
+
+    if (!notes.length) {
+      const rest = new StaveNote({ keys: [restKey(staff.clef, 0, false)], duration: 'w', type: 'r', alignCenter: true, clef });
+      rest.setStyle({ fillStyle: theme.muted, strokeStyle: theme.muted });
+      notes.push(rest);
+      logical.push(-1);
+      evs.push(null);
+      onsets.push(start.toNumber());
+      ends.push(start.toNumber());
+    }
+
+    // quiálteras: agrupa notas consecutivas com o mesmo tuplet.id (antes de entrarem na voz)
+    const tuplets: Tuplet[] = [];
+    for (let i = 0; i < evs.length; ) {
+      const tp = evs[i]?.tuplet;
+      if (!tp) {
+        i++;
+        continue;
+      }
+      let j = i;
+      while (j < evs.length && evs[j]?.tuplet?.id === tp.id) j++;
+      const tuplet = new Tuplet(notes.slice(i, j), { numNotes: tp.actual, notesOccupied: tp.normal, bracketed: true, ratioed: false });
+      tuplet.setStyle({ fillStyle: ink, strokeStyle: ink });
+      tuplets.push(tuplet);
+      i = j;
+    }
+
+    const voice = new Voice({ numBeats: ts.beats, beatValue: ts.beatType }).setMode(Voice.Mode.SOFT);
+    voice.addTickables(notes);
+    const full = validateVoice(measure, ts, vi).state === 'complete';
+    built.push({ voiceIndex: vi, notes, voice, logical, events: evs, onsets, ends, tuplets, beams: [], full });
+  }
+
+  Accidental.applyAccidentals(
+    built.map((b) => b.voice),
+    vexKey(effectiveKey(score, mi)),
+  );
+  return { ref, voices: built };
+}
+
+function beamAll(b: BuiltStaffMeasure, tsString: string, theme: RenderTheme) {
+  for (const v of b.voices) {
+    if (!v.events.some((e) => e?.kind === 'chord')) continue;
+    v.beams = Beam.generateBeams(v.notes, { groups: Beam.getDefaultBeamGroups(tsString), maintainStemDirections: b.voices.length > 1 });
+    for (const beam of v.beams) beam.setStyle({ fillStyle: theme.ink, strokeStyle: theme.ink });
+  }
+}
+
+/** Largura do cabeçalho (clave, armadura, fórmula) no começo de um compasso. */
+function headerWidth(score: Score, mi: number, firstInLine: boolean, clefs: Clef[]): number {
+  let max = 0;
+  for (const clef of clefs) {
+    const s = new Stave(0, 0, 500);
+    decorate(s, score, mi, firstInLine, clef);
+    max = Math.max(max, s.getNoteStartX() - s.getX());
+  }
+  return firstInLine ? max : Math.max(0, max - 10);
+}
+
+function timeChanges(score: Score, mi: number): boolean {
+  if (mi === 0) return true;
+  const a = effectiveTimeSignature(score, mi);
+  const b = effectiveTimeSignature(score, mi - 1);
+  return a.beats !== b.beats || a.beatType !== b.beatType;
+}
+
+function keyChanges(score: Score, mi: number): boolean {
+  return mi > 0 && effectiveKey(score, mi) !== effectiveKey(score, mi - 1);
+}
+
+/** Acrescenta clave/armadura/fórmula conforme a posição do compasso. */
+function decorate(stave: Stave, score: Score, mi: number, firstInLine: boolean, clef: Clef) {
+  const ts = effectiveTimeSignature(score, mi);
+  if (firstInLine) {
+    stave.addClef(VEX_CLEF[clef]);
+    stave.addKeySignature(vexKey(effectiveKey(score, mi)));
+  } else if (keyChanges(score, mi)) {
+    stave.addKeySignature(vexKey(effectiveKey(score, mi)), vexKey(effectiveKey(score, mi - 1)));
+  }
+  if (timeChanges(score, mi)) stave.addTimeSignature(`${ts.beats}/${ts.beatType}`);
+}
+
 export function renderScore(container: HTMLElement, score: Score, opts: RenderOptions): RenderResult {
   container.innerHTML = '';
-  const staff = score.parts[0].staves[0];
   const { theme } = opts;
-  const logicalOf = logicalIndex(staff);
-  const totalLogical = logicalOf.size;
-  const validations = validateStaff(score, staff);
+  const refs: StaffRef[] = allStaves(score).map(({ staff, partIndex, staffIndex }) => ({ staff, partIndex, staffIndex }));
+  const measureCount = refs[0].staff.measures.length;
+  const starts = measureStarts(score, measureCount);
+  const maps: LogicalMaps = new Map(refs.map((r) => [r.staff, Array.from({ length: MAX_VOICES }, (_, v) => logicalIndex(r.staff, v))]));
+  const clefs = refs.map((r) => r.staff.clef);
+  const showNames = score.parts.length > 1;
+  const nameWidth = showNames ? Math.max(...score.parts.map((p) => p.name.length)) * 7 + 16 : 0;
 
-  // 1ª passada: largura mínima de cada compasso
-  const minWidths = staff.measures.map((_, mi) => {
-    const b = buildMeasure(score, staff, mi, logicalOf, theme);
-    const w = new Formatter().joinVoices([b.voice]).preCalculateMinTotalWidth([b.voice]);
-    return Math.max(MIN_MEASURE, w * 1.35 + 48);
+  // 1ª passada: largura mínima de cada compasso (considerando todas as pautas)
+  const minWidths = Array.from({ length: measureCount }, (_, mi) => {
+    const built = refs.map((r) => buildStaffMeasure(score, r, mi, starts[mi], maps, theme));
+    const formatter = new Formatter();
+    const all = built.flatMap((b) => b.voices.map((v) => v.voice));
+    for (const b of built) formatter.joinVoices(b.voices.map((v) => v.voice));
+    const w = formatter.preCalculateMinTotalWidth(all);
+    return Math.max(MIN_MEASURE, w * 1.3 + 44);
   });
-  const header = headerWidth(score, staff);
+
   const usable = Math.max(300, opts.width - MARGIN_X * 2);
 
   // quebra de linha gulosa
   const systems: number[][] = [];
   let line: number[] = [];
   let lineW = 0;
-  staff.measures.forEach((_, mi) => {
-    const extra = line.length === 0 ? header.full : mi > 0 && changesTime(score, staff, mi) ? 30 : 0;
-    const w = minWidths[mi] + extra;
-    if (line.length > 0 && lineW + w > usable) {
+  for (let mi = 0; mi < measureCount; mi++) {
+    const avail = usable - (systems.length === 0 ? nameWidth : 0);
+    const w = minWidths[mi] + headerWidth(score, mi, line.length === 0, clefs);
+    if (line.length > 0 && lineW + w > avail) {
       systems.push(line);
       line = [];
-      lineW = 0;
-      lineW += minWidths[mi] + header.full;
+      lineW = minWidths[mi] + headerWidth(score, mi, true, clefs);
     } else {
       lineW += w;
     }
     line.push(mi);
-  });
+  }
   if (line.length) systems.push(line);
 
-  const height = TOP + systems.length * SYSTEM_GAP + 20;
+  // posição vertical de cada pauta dentro do sistema
+  const offsets: number[] = [];
+  let off = 0;
+  refs.forEach((r, i) => {
+    if (i > 0) off += r.partIndex === refs[i - 1].partIndex ? STAFF_GAP : PART_GAP;
+    offsets.push(off);
+  });
+  const systemHeight = off + 40 + SYSTEM_EXTRA + 40;
+
+  const height = TOP + systems.length * systemHeight + 10;
   const renderer = new Renderer(container as HTMLDivElement, Renderer.Backends.SVG);
   renderer.resize(opts.width, height);
   const ctx = renderer.getContext();
   ctx.setFillStyle(theme.ink);
   ctx.setStrokeStyle(theme.ink);
 
-  const allNotes: Array<{ note: StaveNote; logical: number; event: MusicEvent | null }> = [];
-  const hits: RenderResult['hits'] = [];
-  const staves: Array<{ stave: Stave; built: BuiltMeasure; mi: number }> = [];
+  /** Notas desenhadas, por pauta+voz, na ordem da música. */
+  const drawn = new Map<string, Array<{ note: StaveNote; logical: number; event: MusicEvent | null; mi: number; full: boolean; stave: Stave }>>();
+  const staveAt = new Map<string, Stave>(); // `${refIndex}:${mi}`
+  const hits: Hit[] = [];
+  const posKey = (r: StaffRef, v: number) => `${r.partIndex}:${r.staffIndex}:${v}`;
+  const sel = opts.selection;
+  const inSel = (r: StaffRef, v: number, li: number) =>
+    !!sel && sel.pos.partIndex === r.partIndex && sel.pos.staffIndex === r.staffIndex && sel.pos.voiceIndex === v && li >= sel.from && li < sel.to;
 
   systems.forEach((sys, si) => {
-    const y = TOP + si * SYSTEM_GAP;
-    const naturalW = sys.reduce((acc, mi, k) => acc + minWidths[mi] + (k === 0 ? header.full : 0), 0);
+    const top = TOP + si * systemHeight;
+    const left = MARGIN_X + (si === 0 ? nameWidth : 0);
+    const avail = usable - (si === 0 ? nameWidth : 0);
+    const widths = sys.map((mi, k) => minWidths[mi] + headerWidth(score, mi, k === 0, clefs));
+    const naturalW = widths.reduce((a, b) => a + b, 0);
     const isLast = si === systems.length - 1;
     // justifica: estica proporcionalmente, exceto a última linha se estiver curta
-    const scale = isLast && naturalW < usable * 0.75 ? 1 : usable / naturalW;
-    let x = MARGIN_X;
+    const scale = isLast && naturalW < avail * 0.7 ? 1 : avail / naturalW;
+    let x = left;
+    const firstStaves: Stave[] = [];
+    const lastStaves: Stave[] = [];
+
     sys.forEach((mi, k) => {
-      const ts = effectiveTimeSignature(score, staff, mi);
-      const first = k === 0;
-      const w = (minWidths[mi] + (first ? header.full : 0)) * scale;
-      const stave = new Stave(x, y, w);
-      if (first) {
-        stave.addClef(VEX_CLEF[staff.clef]).addKeySignature(vexKey(score.keyFifths));
-        if (mi === 0 || changesTime(score, staff, mi)) stave.addTimeSignature(`${ts.beats}/${ts.beatType}`);
-        if (mi > 0) stave.setMeasure(mi + 1);
-      } else if (changesTime(score, staff, mi)) {
-        stave.addTimeSignature(`${ts.beats}/${ts.beatType}`);
-      }
-      if (mi === staff.measures.length - 1) stave.setEndBarType(BarlineType.END);
-      stave.setStyle({ strokeStyle: theme.muted, fillStyle: theme.ink });
-      stave.setContext(ctx).draw();
-
-      const built = buildMeasure(score, staff, mi, logicalOf, theme);
-      built.notes.forEach((n, i) => {
-        const li = built.logical[i];
-        if (li >= 0 && li === opts.playing) n.setStyle({ fillStyle: theme.playing, strokeStyle: theme.playing });
-        else if (li >= 0 && li === opts.selected) n.setStyle({ fillStyle: theme.accent, strokeStyle: theme.accent });
+      const w = widths[k] * scale;
+      const ts = effectiveTimeSignature(score, mi);
+      const staves = refs.map((r, ri) => {
+        const stave = new Stave(x, top + offsets[ri], w);
+        decorate(stave, score, mi, k === 0, r.staff.clef);
+        if (k === 0 && ri === 0 && mi > 0) stave.setMeasure(mi + 1);
+        if (mi === measureCount - 1) stave.setEndBarType(BarlineType.END);
+        else if (keyChanges(score, mi + 1)) stave.setEndBarType(BarlineType.DOUBLE);
+        stave.setStyle({ strokeStyle: theme.muted, fillStyle: theme.ink });
+        stave.setContext(ctx).draw();
+        staveAt.set(`${ri}:${mi}`, stave);
+        return stave;
       });
-      const ts2 = `${ts.beats}/${ts.beatType}`;
-      const beamable = built.notes.filter((_, i) => built.events[i]?.kind === 'chord');
-      const beams = beamable.length ? Beam.generateBeams(built.notes, { groups: Beam.getDefaultBeamGroups(ts2) }) : [];
-      const available = stave.getNoteEndX() - stave.getNoteStartX() - 24;
-      stave.setNoteStartX(stave.getNoteStartX() + 8);
-      new Formatter().joinVoices([built.voice]).format([built.voice], Math.max(40, available));
-      built.voice.draw(ctx, stave);
-      for (const b of beams) {
-        b.setStyle({ fillStyle: theme.ink, strokeStyle: theme.ink });
-        b.setContext(ctx).draw();
+      if (k === 0) firstStaves.push(...staves);
+      if (k === sys.length - 1) lastStaves.push(...staves);
+
+      // barras atravessando as pautas do mesmo instrumento
+      for (const part of groupByPart(refs)) {
+        if (part.length < 2) continue;
+        const c = new StaveConnector(staves[part[0]], staves[part[part.length - 1]]);
+        c.setType(mi === measureCount - 1 ? 'boldDoubleRight' : 'singleRight');
+        c.setStyle({ strokeStyle: theme.muted, fillStyle: theme.ink });
+        c.setContext(ctx).draw();
       }
 
-      if (validations[mi].state === 'incomplete' && mi < staff.measures.length - 1) {
-        ctx.save();
-        ctx.setFillStyle(theme.warn);
-        ctx.fillRect(stave.getX() + 2, y + 38, w - 4, 3);
-        ctx.restore();
-      }
+      const built = refs.map((r) => buildStaffMeasure(score, r, mi, starts[mi], maps, theme));
+      const tsString = `${ts.beats}/${ts.beatType}`;
+      built.forEach((b) => beamAll(b, tsString, theme));
 
-      built.notes.forEach((n, i) => {
-        const li = built.logical[i];
-        allNotes.push({ note: n, logical: li, event: built.events[i] ?? null });
-        if (li >= 0) {
-          const bb = n.getBoundingBox();
-          hits.push({ index: li, x: bb.getX() - 4, y: y + 20, w: bb.getW() + 8, h: STAVE_HEIGHT + 40 });
+      // destaques (seleção e reprodução)
+      built.forEach((b) =>
+        b.voices.forEach((v) =>
+          v.notes.forEach((n, i) => {
+            const li = v.logical[i];
+            if (li < 0) return;
+            const playingNow = opts.playingTime !== null && v.onsets[i] <= opts.playingTime + 1e-9 && opts.playingTime < v.ends[i] - 1e-9;
+            if (playingNow) n.setStyle({ fillStyle: theme.playing, strokeStyle: theme.playing });
+            else if (inSel(b.ref, v.voiceIndex, li)) n.setStyle({ fillStyle: theme.accent, strokeStyle: theme.accent });
+          }),
+        ),
+      );
+
+      // um formatador para todas as pautas: notas simultâneas ficam alinhadas na vertical
+      const formatter = new Formatter();
+      for (const b of built) formatter.joinVoices(b.voices.map((v) => v.voice));
+      const startX = Math.max(...staves.map((s) => s.getNoteStartX())) + 8;
+      staves.forEach((s) => s.setNoteStartX(startX));
+      const available = staves[0].getNoteEndX() - startX - 20;
+      formatter.format(
+        built.flatMap((b) => b.voices.map((v) => v.voice)),
+        Math.max(40, available),
+      );
+
+      built.forEach((b, ri) => {
+        const stave = staves[ri];
+        for (const v of b.voices) {
+          v.voice.draw(ctx, stave);
+          for (const beam of v.beams) beam.setContext(ctx).draw();
+          for (const t of v.tuplets) t.setContext(ctx).draw();
+          const key = posKey(b.ref, v.voiceIndex);
+          if (!drawn.has(key)) drawn.set(key, []);
+          v.notes.forEach((n, i) => {
+            const li = v.logical[i];
+            drawn.get(key)!.push({ note: n, logical: li, event: v.events[i], mi, full: v.full, stave });
+            if (li >= 0) {
+              const bb = n.getBoundingBox();
+              hits.push({
+                pos: { partIndex: b.ref.partIndex, staffIndex: b.ref.staffIndex, voiceIndex: v.voiceIndex },
+                index: li,
+                x: bb.getX() - 4,
+                y: stave.getYForLine(0) - 22,
+                w: bb.getW() + 8,
+                h: 40 + 44,
+              });
+            }
+          });
+        }
+        // compasso cheio demais ou faltando (exceto o último, que está sendo escrito)
+        const v0 = refs[ri].staff.measures[mi].voices[0];
+        const laterContent = refs[ri].staff.measures.slice(mi + 1).some((m) => m.voices[0]?.events.length);
+        if (laterContent && v0 && voiceLength(v0).lt(measureCapacity(ts))) {
+          ctx.save();
+          ctx.setFillStyle(theme.warn);
+          ctx.fillRect(stave.getX() + 2, stave.getYForLine(4) + 14, w - 4, 3);
+          ctx.restore();
         }
       });
-      staves.push({ stave, built, mi });
       x += w;
     });
+
+    // conectores no começo do sistema: linha única e chave do piano
+    if (firstStaves.length > 1) {
+      const c = new StaveConnector(firstStaves[0], firstStaves[firstStaves.length - 1]);
+      c.setType('singleLeft');
+      c.setStyle({ strokeStyle: theme.muted, fillStyle: theme.ink });
+      c.setContext(ctx).draw();
+    }
+    for (const part of groupByPart(refs)) {
+      const p = score.parts[refs[part[0]].partIndex];
+      const a = firstStaves[part[0]];
+      const b = firstStaves[part[part.length - 1]];
+      if (part.length > 1) {
+        const brace = new StaveConnector(a, b);
+        brace.setType('brace');
+        brace.setStyle({ strokeStyle: theme.ink, fillStyle: theme.ink });
+        brace.setContext(ctx).draw();
+      }
+      if (si === 0 && showNames) {
+        ctx.save();
+        ctx.setFont('Manrope, sans-serif', 12, 'bold');
+        ctx.setFillStyle(theme.ink);
+        const midY = (a.getYForLine(0) + b.getYForLine(4)) / 2 + 4;
+        ctx.fillText(p.name, MARGIN_X, midY);
+        ctx.restore();
+      }
+    }
+    void lastStaves;
   });
 
-  drawTies(ctx, allNotes, staves, theme);
+  for (const list of drawn.values()) drawTies(ctx, list, theme);
 
-  return { height, cursor: opts.showCursor ? cursorBox(opts.cursor, totalLogical, allNotes, staves) : null, hits };
+  return { height, cursor: opts.cursor ? cursorBox(opts.cursor, refs, drawn, staveAt, posKey) : null, hits };
 }
 
-function changesTime(score: Score, staff: Staff, mi: number): boolean {
-  if (mi === 0) return true;
-  const a = effectiveTimeSignature(score, staff, mi);
-  const b = effectiveTimeSignature(score, staff, mi - 1);
-  return a.beats !== b.beats || a.beatType !== b.beatType;
-}
-
-function headerWidth(score: Score, staff: Staff): { full: number } {
-  const s = new Stave(0, 0, 500);
-  s.addClef(VEX_CLEF[staff.clef]).addKeySignature(vexKey(score.keyFifths)).addTimeSignature(`${score.timeSignature.beats}/${score.timeSignature.beatType}`);
-  return { full: s.getNoteStartX() - s.getX() };
+function groupByPart(refs: StaffRef[]): number[][] {
+  const groups: number[][] = [];
+  refs.forEach((r, i) => {
+    if (i > 0 && refs[i - 1].partIndex === r.partIndex) groups[groups.length - 1].push(i);
+    else groups.push([i]);
+  });
+  return groups;
 }
 
 function drawTies(
   ctx: ReturnType<Renderer['getContext']>,
   notes: Array<{ note: StaveNote; event: MusicEvent | null }>,
-  staves: Array<{ stave: Stave }>,
   theme: RenderTheme,
 ) {
   const chords = notes.filter((n) => n.event?.kind === 'chord');
@@ -294,25 +517,30 @@ function drawTies(
       draw(new StaveTie({ firstNote: null, lastNote: b.note, firstIndexes: last, lastIndexes: last }));
     }
   }
-  void staves;
 }
 
 function cursorBox(
-  cursor: number,
-  total: number,
-  notes: Array<{ note: StaveNote; logical: number }>,
-  staves: Array<{ stave: Stave; built: BuiltMeasure }>,
+  cursor: { pos: Position; index: number },
+  refs: StaffRef[],
+  drawn: Map<string, Array<{ note: StaveNote; logical: number; mi: number; full: boolean; stave: Stave }>>,
+  staveAt: Map<string, Stave>,
+  posKey: (r: StaffRef, v: number) => string,
 ): CursorBox | null {
-  const box = (x: number, stave: Stave): CursorBox => ({ x, y: stave.getYForLine(0) - 18, height: STAVE_HEIGHT + 36 });
-  if (cursor < total) {
-    const target = notes.find((n) => n.logical === cursor);
-    if (!target) return null;
-    return box(target.note.getAbsoluteX() - 8, target.note.getStave()!);
+  const ri = refs.findIndex((r) => r.partIndex === cursor.pos.partIndex && r.staffIndex === cursor.pos.staffIndex);
+  if (ri < 0) return null;
+  const box = (x: number, stave: Stave): CursorBox => ({ x, y: stave.getYForLine(0) - 18, height: 40 + 36 });
+  const list = (drawn.get(posKey(refs[ri], cursor.pos.voiceIndex)) ?? []).filter((n) => n.logical >= 0);
+  const target = list.find((n) => n.logical === cursor.index);
+  if (target) return box(target.note.getAbsoluteX() - 8, target.stave);
+  // depois do último evento da voz
+  const last = list[list.length - 1];
+  if (!last) {
+    const s = staveAt.get(`${ri}:0`);
+    return s ? box(s.getNoteStartX() + 6, s) : null;
   }
-  // depois do último evento: no compasso livre do fim, ou logo após a última nota
-  const lastStave = staves[staves.length - 1];
-  if (!lastStave) return null;
-  if (lastStave.built.emptyRest) return box(lastStave.stave.getNoteStartX() + 6, lastStave.stave);
-  const lastNote = lastStave.built.notes[lastStave.built.notes.length - 1];
-  return box(lastNote.getAbsoluteX() + lastNote.getWidth() + 14, lastStave.stave);
+  if (last.full) {
+    const next = staveAt.get(`${ri}:${last.mi + 1}`);
+    if (next) return box(next.getNoteStartX() + 6, next);
+  }
+  return box(last.note.getAbsoluteX() + last.note.getWidth() + 14, last.stave);
 }

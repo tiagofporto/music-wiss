@@ -1,36 +1,50 @@
 import { Fraction } from '../model/fraction';
 import type { Duration, DurationType } from '../model/duration';
 import { DURATION_ORDER, durationValue } from '../model/duration';
+import type { Fifths } from '../model/key';
 import { keyAlter } from '../model/key';
 import type { Alter, Pitch, Step } from '../model/pitch';
-import { clefMiddle, nearestOctave, transposeOctave, transposeSemitone } from '../model/pitch';
-import type { Score, Staff } from '../model/score';
-import { newId } from '../model/score';
+import { clefMiddle, diatonicIndex, nearestOctave, transposeOctave, transposeSemitone } from '../model/pitch';
+import type { Score, Staff, TimeSignature } from '../model/score';
+import { allStaves, createPart, effectiveKey, effectiveTimeSignature, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
 import type { LogicalEvent } from '../model/sequence';
-import { readLogical, writeLogical } from '../model/sequence';
+import { cloneNotes, logicalLength, normalizeMeasures, padTo, readLogical, reflowAll, writeLogical } from '../model/sequence';
 
 export type EditorListener = (change: EditorChange) => void;
 
 export interface EditorChange {
-  /** Nota que deve soar como retorno ao usuário (inserção ou mudança de altura). */
+  /** Notas que devem soar como retorno ao usuário (inserção ou mudança de altura). */
   sounded?: Pitch[];
 }
+
+/** Onde o cursor está: instrumento, pauta dentro do instrumento e voz. */
+export interface Position {
+  partIndex: number;
+  staffIndex: number;
+  voiceIndex: number;
+}
+
+/** Normal de cada quiáltera: 3 no tempo de 2, 5 no tempo de 4... */
+export const TUPLET_NORMAL: Record<number, number> = { 2: 3, 3: 2, 4: 3, 5: 4, 6: 4, 7: 4, 9: 8 };
 
 /**
  * Estado de edição e comandos de entrada de notas. Não sabe nada de DOM:
  * a camada de UI traduz teclas em chamadas destes métodos.
  *
- * O cursor é um índice na sequência lógica da voz: 0 = antes do primeiro evento,
- * n = depois do último. O evento "selecionado" é o imediatamente antes do cursor.
+ * O cursor é um índice na sequência lógica da voz atual: 0 = antes do primeiro
+ * evento, n = depois do último. Sem seleção de trecho, o evento "selecionado" é o
+ * imediatamente antes do cursor. Com `anchor`, a seleção vai de anchor até o cursor.
  */
 export class Editor {
   score: Score;
-  partIndex = 0;
-  staffIndex = 0;
-  voiceIndex = 0;
+  pos: Position = { partIndex: 0, staffIndex: 0, voiceIndex: 0 };
   cursor = 0;
+  anchor: number | null = null;
   inputMode = false;
   duration: Duration = { type: 'quarter', dots: 0 };
+  clipboard: LogicalEvent[] | null = null;
+  /** Evento onde começou uma seleção feita com Shift+clique. */
+  private pivot = 0;
   private listeners: EditorListener[] = [];
   private undoStack: string[] = [];
   private redoStack: string[] = [];
@@ -49,33 +63,69 @@ export class Editor {
   }
 
   get staff(): Staff {
-    return this.score.parts[this.partIndex].staves[this.staffIndex];
+    return this.score.parts[this.pos.partIndex].staves[this.pos.staffIndex];
   }
 
   events(): LogicalEvent[] {
-    return readLogical(this.staff, this.voiceIndex);
+    return readLogical(this.staff, this.pos.voiceIndex);
   }
 
+  // ------------------------------------------------------------ seleção
+
+  hasRange(): boolean {
+    return this.anchor !== null && this.anchor !== this.cursor;
+  }
+
+  /** Intervalo [início, fim) de eventos afetados pelos comandos. */
+  range(): [number, number] | null {
+    if (this.hasRange()) return [Math.min(this.anchor!, this.cursor), Math.max(this.anchor!, this.cursor)];
+    if (this.cursor > 0) return [this.cursor - 1, this.cursor];
+    return null;
+  }
+
+  /** Evento imediatamente antes do cursor (o "selecionado" sem trecho). */
   selected(): LogicalEvent | null {
     return this.events()[this.cursor - 1] ?? null;
   }
 
-  /** Última nota antes do cursor, usada para escolher a oitava da próxima. */
-  private previousPitch(events: LogicalEvent[]): Pitch | null {
-    for (let i = this.cursor - 1; i >= 0; i--) {
-      const n = events[i].notes[0];
-      if (n) return n.pitch;
-    }
-    return null;
+  selectedEvents(): LogicalEvent[] {
+    const r = this.range();
+    return r ? this.events().slice(r[0], r[1]) : [];
   }
 
+  /** Aumenta o intervalo para não cortar grupos de quiáltera ao meio. */
+  private expandToTuplets(events: LogicalEvent[], [a, b]: [number, number]): [number, number] {
+    while (a > 0 && events[a].tuplet && events[a - 1].tuplet?.id === events[a].tuplet!.id) a--;
+    while (b < events.length && events[b - 1]?.tuplet && events[b].tuplet?.id === events[b - 1].tuplet!.id) b++;
+    return [a, b];
+  }
+
+  selectAll(): void {
+    this.anchor = 0;
+    this.cursor = this.events().length;
+    this.emit();
+  }
+
+  clearSelection(): void {
+    if (this.anchor === null) return;
+    this.anchor = null;
+    this.emit();
+  }
+
+  // ------------------------------------------------------------ histórico
+
   private commit(events: LogicalEvent[], change: EditorChange = {}): void {
-    writeLogical(this.score, this.staff, events, this.voiceIndex);
+    writeLogical(this.score, this.staff, events, this.pos.voiceIndex);
+    normalizeMeasures(this.score);
     this.emit(change);
   }
 
+  private state(): string {
+    return JSON.stringify({ score: this.score, cursor: this.cursor, pos: this.pos });
+  }
+
   private snapshot(): void {
-    this.undoStack.push(JSON.stringify({ score: this.score, cursor: this.cursor }));
+    this.undoStack.push(this.state());
     if (this.undoStack.length > 200) this.undoStack.shift();
     this.redoStack = [];
   }
@@ -83,32 +133,34 @@ export class Editor {
   undo(): void {
     const prev = this.undoStack.pop();
     if (!prev) return;
-    this.redoStack.push(JSON.stringify({ score: this.score, cursor: this.cursor }));
+    this.redoStack.push(this.state());
     this.restore(prev);
   }
 
   redo(): void {
     const next = this.redoStack.pop();
     if (!next) return;
-    this.undoStack.push(JSON.stringify({ score: this.score, cursor: this.cursor }));
+    this.undoStack.push(this.state());
     this.restore(next);
   }
 
   private restore(json: string): void {
-    const data = JSON.parse(json) as { score: Score; cursor: number };
+    const data = JSON.parse(json) as { score: Score; cursor: number; pos: Position };
     this.score = data.score;
+    this.pos = data.pos;
     this.cursor = data.cursor;
+    this.anchor = null;
     this.emit();
   }
 
   /** Troca a partitura inteira (nova partitura, abrir arquivo). */
   load(score: Score): void {
     this.score = score;
-    this.partIndex = 0;
-    this.staffIndex = 0;
-    this.voiceIndex = 0;
+    this.pos = { partIndex: 0, staffIndex: 0, voiceIndex: 0 };
     this.undoStack = [];
     this.redoStack = [];
+    this.anchor = null;
+    this.duration = { type: 'quarter', dots: 0 };
     this.cursor = this.events().length;
     this.emit();
   }
@@ -117,11 +169,102 @@ export class Editor {
   mutate(fn: (score: Score) => void): void {
     this.snapshot();
     fn(this.score);
-    this.commit(this.events());
+    reflowAll(this.score);
+    this.clampCursor();
+    this.emit();
   }
+
+  private clampCursor(): void {
+    const n = this.events().length;
+    this.cursor = Math.min(this.cursor, n);
+    if (this.anchor !== null) this.anchor = Math.min(this.anchor, n);
+  }
+
+  // ------------------------------------------------------------ tempo e posição
+
+  /** Momento do cursor, em semibreves desde o início. */
+  cursorTime(events = this.events()): Fraction {
+    return Fraction.sum(events.slice(0, this.cursor).map((e) => e.length));
+  }
+
+  /** Compasso que contém um momento. */
+  measureAt(time: Fraction): number {
+    let t = Fraction.ZERO;
+    for (let i = 0; i < 10000; i++) {
+      t = t.add(measureCapacity(effectiveTimeSignature(this.score, i)));
+      if (time.lt(t)) return i;
+    }
+    return 0;
+  }
+
+  cursorMeasure(): number {
+    return Math.min(this.measureAt(this.cursorTime()), this.staff.measures.length - 1);
+  }
+
+  /**
+   * Muda de pauta/voz mantendo o momento do cursor. Se a voz de destino ainda não
+   * chega até ali, ela é completada com pausas.
+   */
+  setPosition(pos: Partial<Position>): void {
+    const time = this.cursorTime();
+    this.stripAutoRests();
+    const next = { ...this.pos, ...pos };
+    if (!this.score.parts[next.partIndex]?.staves[next.staffIndex]) return;
+    next.voiceIndex = Math.max(0, Math.min(MAX_VOICES - 1, next.voiceIndex));
+    this.pos = next;
+    this.anchor = null;
+    const events = this.events();
+    const total = Fraction.sum(events.map((e) => e.length));
+    if (total.lt(time)) {
+      this.snapshot();
+      padTo(events, time);
+      this.cursor = events.length;
+      this.commit(events);
+      return;
+    }
+    let t = Fraction.ZERO;
+    let idx = events.length;
+    for (let i = 0; i < events.length; i++) {
+      if (t.gte(time)) {
+        idx = i;
+        break;
+      }
+      t = t.add(events[i].length);
+    }
+    this.cursor = idx;
+    this.emit();
+  }
+
+  /**
+   * Ao sair de uma voz, as pausas que foram criadas só para levar o cursor até
+   * ali (e que continuam no fim, sem nada escrito depois) são removidas.
+   */
+  private stripAutoRests(): void {
+    const events = this.events();
+    let n = events.length;
+    while (n > 0 && events[n - 1].auto) n--;
+    if (n === events.length) return;
+    writeLogical(this.score, this.staff, events.slice(0, n), this.pos.voiceIndex);
+    normalizeMeasures(this.score);
+  }
+
+  /** Vai para a pauta de cima (-1) ou de baixo (+1), passando entre instrumentos. */
+  moveStaff(dir: 1 | -1): void {
+    const list = allStaves(this.score);
+    const i = list.findIndex((s) => s.partIndex === this.pos.partIndex && s.staffIndex === this.pos.staffIndex);
+    const target = list[i + dir];
+    if (target) this.setPosition({ partIndex: target.partIndex, staffIndex: target.staffIndex, voiceIndex: 0 });
+  }
+
+  setVoice(voiceIndex: number): void {
+    this.setPosition({ voiceIndex });
+  }
+
+  // ------------------------------------------------------------ modo e figuras
 
   toggleInputMode(force?: boolean): void {
     this.inputMode = force ?? !this.inputMode;
+    this.anchor = null;
     this.emit();
   }
 
@@ -131,12 +274,14 @@ export class Editor {
   }
 
   toggleDot(): void {
-    // em modo de entrada o ponto vale para a próxima nota; fora dele, para a nota selecionada
-    if (!this.inputMode && this.selected()) {
-      this.changeSelected((ev) => {
-        const dots = ev.duration.dots ? 0 : 1;
+    // em modo de entrada o ponto vale para a próxima nota; fora dele, para a seleção
+    if (!this.inputMode && this.range()) {
+      const evs = this.selectedEvents().filter((e) => !e.tuplet);
+      const dots = evs.every((e) => e.duration.dots) ? 0 : 1;
+      this.changeRange((ev) => {
+        if (ev.tuplet) return;
         ev.duration = { ...ev.duration, dots };
-        ev.length = durationValue(ev.duration);
+        ev.length = logicalLength(ev);
       });
       return;
     }
@@ -144,123 +289,12 @@ export class Editor {
     this.emit();
   }
 
-  /** Insere uma nota pela letra (A–G). A armadura define o acidente padrão. */
-  insertStep(step: Step): void {
-    const events = this.events();
-    // sem nota anterior, a referência é a linha do meio da clave (Si4 na de Sol, Ré3 na de Fá)
-    const octave = nearestOctave(step, this.previousPitch(events) ?? clefMiddle(this.staff.clef));
-    const p: Pitch = { step, octave, alter: keyAlter(this.score.keyFifths, step) };
-    this.insertPitch(p);
-  }
-
-  insertPitch(p: Pitch): void {
-    this.snapshot();
-    const events = this.events();
-    events.splice(this.cursor, 0, {
-      id: newId('c'),
-      kind: 'chord',
-      duration: { ...this.duration },
-      length: durationValue(this.duration),
-      notes: [{ id: newId('n'), pitch: p, tieToNext: false }],
-    });
-    this.cursor += 1;
-    this.commit(events, { sounded: [p] });
-  }
-
-  /** Acrescenta uma nota (por letra) ao acorde selecionado, acima da nota mais aguda. */
-  addToChord(step: Step): void {
-    const sel = this.selected();
-    if (!sel || sel.kind !== 'chord') return this.insertStep(step);
-    const top = sel.notes[sel.notes.length - 1].pitch;
-    let octave = top.octave;
-    const steps: Step[] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
-    if (steps.indexOf(step) <= steps.indexOf(top.step)) octave += 1;
-    const p: Pitch = { step, octave, alter: keyAlter(this.score.keyFifths, step) };
-    this.changeSelected((ev) => {
-      ev.notes.push({ id: newId('n'), pitch: p, tieToNext: false });
-    }, [p]);
-  }
-
-  insertRest(): void {
-    this.snapshot();
-    const events = this.events();
-    events.splice(this.cursor, 0, {
-      id: newId('r'),
-      kind: 'rest',
-      duration: { ...this.duration },
-      length: durationValue(this.duration),
-      notes: [],
-    });
-    this.cursor += 1;
-    this.commit(events);
-  }
-
-  deleteBackward(): void {
-    if (this.cursor === 0) return;
-    this.snapshot();
-    const events = this.events();
-    events.splice(this.cursor - 1, 1);
-    this.cursor -= 1;
-    this.commit(events);
-  }
-
-  deleteForward(): void {
-    const events = this.events();
-    if (this.cursor >= events.length) return;
-    this.snapshot();
-    events.splice(this.cursor, 1);
-    this.commit(events);
-  }
-
-  moveCursor(delta: number): void {
-    const n = this.events().length;
-    this.cursor = Math.min(n, Math.max(0, this.cursor + delta));
-    const sel = this.selected();
-    this.emit({ sounded: sel?.notes.map((x) => x.pitch) });
-  }
-
-  setCursor(index: number): void {
-    this.cursor = Math.min(this.events().length, Math.max(0, index));
-    this.emit();
-  }
-
-  /** Define o acidente de todas as notas do evento selecionado. */
-  setAlter(alter: Alter): void {
-    this.changeSelected((ev) => {
-      for (const n of ev.notes) n.pitch = { ...n.pitch, alter };
-    });
-  }
-
-  /** + / − : sobe ou desce um acidente (♭ → ♮ → ♯), limitado ao dobrado. */
-  shiftAlter(dir: 1 | -1): void {
-    this.changeSelected((ev) => {
-      for (const n of ev.notes) {
-        const alter = Math.max(-2, Math.min(2, n.pitch.alter + dir)) as Alter;
-        n.pitch = { ...n.pitch, alter };
-      }
-    });
-  }
-
-  transposeSelected(kind: 'semitone' | 'octave', dir: 1 | -1): void {
-    this.changeSelected((ev) => {
-      for (const n of ev.notes) {
-        n.pitch = kind === 'octave' ? transposeOctave(n.pitch, dir) : transposeSemitone(n.pitch, dir);
-      }
-    });
-  }
-
-  toggleTie(): void {
-    this.changeSelected((ev) => {
-      const on = !ev.notes.every((n) => n.tieToNext);
-      for (const n of ev.notes) n.tieToNext = on;
-    });
-  }
-
-  /** Muda a figura do evento selecionado (fora do modo de entrada). */
+  /** Muda a figura dos eventos selecionados (fora do modo de entrada). */
   setSelectedDuration(type: DurationType): void {
-    this.changeSelected((ev) => {
+    this.changeRange((ev) => {
+      if (ev.tuplet) return;
       ev.duration = { type, dots: ev.duration.dots };
-      ev.length = durationValue(ev.duration);
+      ev.length = logicalLength(ev);
     });
   }
 
@@ -271,16 +305,300 @@ export class Editor {
     this.setDuration(DURATION_ORDER[i]);
   }
 
-  private changeSelected(fn: (ev: LogicalEvent) => void, sounded?: Pitch[]): void {
-    const events = this.events();
-    const ev = events[this.cursor - 1];
-    if (!ev) return;
-    this.snapshot();
-    fn(ev);
-    this.commit(events, { sounded: sounded ?? (ev.kind === 'chord' ? ev.notes.map((n) => n.pitch) : undefined) });
+  // ------------------------------------------------------------ entrada de notas
+
+  /** Última nota antes do cursor, usada para escolher a oitava da próxima. */
+  private previousPitch(events: LogicalEvent[]): Pitch | null {
+    for (let i = this.cursor - 1; i >= 0; i--) {
+      const n = events[i].notes[0];
+      if (n) return n.pitch;
+    }
+    return null;
   }
 
-  /** Duração total já escrita na voz, em semibreves. */
+  /** Insere uma nota pela letra (A–G). A armadura em vigor define o acidente padrão. */
+  insertStep(step: Step): void {
+    const events = this.events();
+    // sem nota anterior, a referência é a linha do meio da clave (Si4 na de Sol, Ré3 na de Fá)
+    const octave = nearestOctave(step, this.previousPitch(events) ?? clefMiddle(this.staff.clef));
+    const key = effectiveKey(this.score, this.cursorMeasure());
+    this.insertPitch({ step, octave, alter: keyAlter(key, step) });
+  }
+
+  insertPitch(p: Pitch): void {
+    this.insertEvent('chord', [{ id: newId('n'), pitch: p, tieToNext: false }], [p]);
+  }
+
+  insertRest(): void {
+    this.insertEvent('rest', []);
+  }
+
+  /**
+   * Insere no cursor. Se o cursor está numa pausa provisória de quiáltera,
+   * o novo evento toma o lugar dela (com a figura da quiáltera).
+   */
+  private insertEvent(kind: 'chord' | 'rest', notes: LogicalEvent['notes'], sounded?: Pitch[]): void {
+    this.snapshot();
+    const events = this.events();
+    if (this.hasRange()) this.removeRange(events);
+    this.anchor = null;
+    const here = events[this.cursor];
+    if (here?.placeholder) {
+      events[this.cursor] = { ...here, id: newId(kind === 'rest' ? 'r' : 'c'), kind, notes, placeholder: undefined };
+    } else {
+      const ev: LogicalEvent = { id: newId(kind === 'rest' ? 'r' : 'c'), kind, duration: { ...this.duration }, length: durationValue(this.duration), notes };
+      events.splice(this.cursor, 0, ev);
+    }
+    this.cursor += 1;
+    this.commit(events, { sounded });
+  }
+
+  /**
+   * Cria uma quiáltera (Ctrl+3 = tercina) com a figura atual: entram `actual`
+   * pausas provisórias e o cursor fica na primeira; as próximas notas as substituem.
+   */
+  insertTuplet(actual: number): string | null {
+    const normal = TUPLET_NORMAL[actual];
+    if (!normal) return null;
+    const events = this.events();
+    const tuplet = { id: newId('t'), actual, normal };
+    const d = { type: this.duration.type, dots: 0 };
+    // a quiáltera precisa caber no que sobra do compasso
+    const time = this.cursorTime(events);
+    const mi = this.measureAt(time);
+    let start = Fraction.ZERO;
+    for (let i = 0; i < mi; i++) start = start.add(measureCapacity(effectiveTimeSignature(this.score, i)));
+    const space = measureCapacity(effectiveTimeSignature(this.score, mi)).sub(time.sub(start));
+    if (logicalLength({ duration: d, tuplet }).mul(new Fraction(actual)).gt(space)) {
+      return 'A quiáltera não cabe no resto do compasso. Escolha uma figura menor.';
+    }
+    this.snapshot();
+    const group: LogicalEvent[] = Array.from({ length: actual }, () => ({
+      id: newId('r'),
+      kind: 'rest' as const,
+      duration: d,
+      length: logicalLength({ duration: d, tuplet }),
+      notes: [],
+      tuplet,
+      placeholder: true,
+    }));
+    events.splice(this.cursor, 0, ...group);
+    this.anchor = null;
+    this.commit(events);
+    return null;
+  }
+
+  /** Acrescenta uma nota (por letra) ao acorde selecionado, acima da nota mais aguda. */
+  addToChord(step: Step): void {
+    const sel = this.selected();
+    if (!sel || sel.kind !== 'chord') return this.insertStep(step);
+    const top = sel.notes.reduce((a, b) => (diatonicIndex(b.pitch) > diatonicIndex(a.pitch) ? b : a)).pitch;
+    const steps: Step[] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+    const octave = steps.indexOf(step) <= steps.indexOf(top.step) ? top.octave + 1 : top.octave;
+    const p: Pitch = { step, octave, alter: keyAlter(effectiveKey(this.score, this.cursorMeasure()), step) };
+    this.anchor = null;
+    this.changeRange((ev) => {
+      ev.notes.push({ id: newId('n'), pitch: p, tieToNext: false });
+    }, [p]);
+  }
+
+  // ------------------------------------------------------------ apagar
+
+  /** Remove o trecho selecionado de `events` (ajustando o cursor). */
+  private removeRange(events: LogicalEvent[]): void {
+    const r = this.range();
+    if (!r) return;
+    const [a, b] = this.expandToTuplets(events, r);
+    events.splice(a, b - a);
+    this.cursor = a;
+    this.anchor = null;
+  }
+
+  deleteBackward(): void {
+    if (this.hasRange()) return this.deleteRange();
+    if (this.cursor === 0) return;
+    this.snapshot();
+    const events = this.events();
+    const ev = events[this.cursor - 1];
+    if (ev.tuplet && ev.kind === 'chord') {
+      // dentro de quiáltera, a nota vira pausa provisória para o grupo continuar completo
+      events[this.cursor - 1] = { ...ev, kind: 'rest', notes: [], placeholder: true };
+      this.cursor -= 1;
+    } else if (ev.tuplet) {
+      const [a, b] = this.expandToTuplets(events, [this.cursor - 1, this.cursor]);
+      events.splice(a, b - a);
+      this.cursor = a;
+    } else {
+      events.splice(this.cursor - 1, 1);
+      this.cursor -= 1;
+    }
+    this.commit(events);
+  }
+
+  deleteForward(): void {
+    if (this.hasRange()) return this.deleteRange();
+    const events = this.events();
+    if (this.cursor >= events.length) return;
+    this.cursor += 1;
+    this.deleteBackward();
+  }
+
+  deleteRange(): void {
+    if (!this.range()) return;
+    this.snapshot();
+    const events = this.events();
+    this.removeRange(events);
+    this.commit(events);
+  }
+
+  // ------------------------------------------------------------ cursor
+
+  moveCursor(delta: number, extend = false): void {
+    const n = this.events().length;
+    if (extend && this.anchor === null) this.anchor = this.cursor;
+    if (!extend) this.anchor = null;
+    this.cursor = Math.min(n, Math.max(0, this.cursor + delta));
+    const sel = this.selected();
+    this.emit({ sounded: extend ? undefined : sel?.notes.map((x) => x.pitch) });
+  }
+
+  setCursor(index: number, extend = false): void {
+    if (extend && this.anchor === null) this.anchor = this.cursor;
+    if (!extend) this.anchor = null;
+    this.cursor = Math.min(this.events().length, Math.max(0, index));
+    this.emit();
+  }
+
+  /** Clique numa nota: vai para a pauta/voz dela e seleciona. */
+  clickEvent(pos: Position, index: number, extend = false): void {
+    const samePlace = pos.partIndex === this.pos.partIndex && pos.staffIndex === this.pos.staffIndex && pos.voiceIndex === this.pos.voiceIndex;
+    if (!samePlace) {
+      this.pos = { ...pos };
+      this.anchor = null;
+      extend = false;
+    }
+    if (extend) {
+      // seleciona do evento onde a seleção começou até o evento clicado, inclusive
+      if (this.anchor === null) this.pivot = Math.max(0, this.cursor - 1);
+      this.anchor = Math.min(this.pivot, index);
+      this.cursor = Math.max(this.pivot, index) + 1;
+    } else {
+      this.anchor = null;
+      this.pivot = index;
+      this.cursor = index + 1;
+    }
+    this.clampCursor();
+    this.emit({ sounded: extend ? undefined : this.selected()?.notes.map((n) => n.pitch) });
+  }
+
+  // ------------------------------------------------------------ alterações na seleção
+
+  /** Define o acidente de todas as notas selecionadas. */
+  setAlter(alter: Alter): void {
+    this.changeRange((ev) => {
+      for (const n of ev.notes) n.pitch = { ...n.pitch, alter };
+    });
+  }
+
+  /** + / − : sobe ou desce um acidente (♭ → ♮ → ♯), limitado ao dobrado. */
+  shiftAlter(dir: 1 | -1): void {
+    this.changeRange((ev) => {
+      for (const n of ev.notes) {
+        const alter = Math.max(-2, Math.min(2, n.pitch.alter + dir)) as Alter;
+        n.pitch = { ...n.pitch, alter };
+      }
+    });
+  }
+
+  transposeSelected(kind: 'semitone' | 'octave', dir: 1 | -1): void {
+    this.changeRange((ev) => {
+      for (const n of ev.notes) {
+        n.pitch = kind === 'octave' ? transposeOctave(n.pitch, dir) : transposeSemitone(n.pitch, dir);
+      }
+    });
+  }
+
+  toggleTie(): void {
+    const evs = this.selectedEvents().filter((e) => e.kind === 'chord');
+    const on = !evs.every((ev) => ev.notes.every((n) => n.tieToNext));
+    this.changeRange((ev) => {
+      for (const n of ev.notes) n.tieToNext = on;
+    });
+  }
+
+  private changeRange(fn: (ev: LogicalEvent) => void, sounded?: Pitch[]): void {
+    const r = this.range();
+    if (!r) return;
+    const events = this.events();
+    this.snapshot();
+    const touched = events.slice(r[0], r[1]);
+    touched.forEach(fn);
+    const single = touched.length === 1 && touched[0].kind === 'chord' ? touched[0].notes.map((n) => n.pitch) : undefined;
+    this.commit(events, { sounded: sounded ?? single });
+  }
+
+  // ------------------------------------------------------------ copiar e colar
+
+  copy(): number {
+    const r = this.range();
+    if (!r) return 0;
+    const events = this.events();
+    const [a, b] = this.expandToTuplets(events, r);
+    this.clipboard = events.slice(a, b).map((e) => ({ ...e, notes: cloneNotes(e.notes), tuplet: e.tuplet && { ...e.tuplet } }));
+    return this.clipboard.length;
+  }
+
+  cut(): number {
+    const n = this.copy();
+    if (n) this.deleteRange();
+    return n;
+  }
+
+  /** Cola no cursor (substituindo o trecho selecionado, se houver). */
+  paste(): number {
+    if (!this.clipboard?.length) return 0;
+    this.snapshot();
+    const events = this.events();
+    if (this.hasRange()) this.removeRange(events);
+    const tupletIds = new Map<string, string>();
+    const items = this.clipboard.map((e) => {
+      const tuplet = e.tuplet && { ...e.tuplet, id: tupletIds.get(e.tuplet.id) ?? tupletIds.set(e.tuplet.id, newId('t')).get(e.tuplet.id)! };
+      return { ...e, id: newId('c'), notes: cloneNotes(e.notes).map((n) => ({ ...n, id: newId('n') })), tuplet, auto: undefined };
+    });
+    events.splice(this.cursor, 0, ...items);
+    this.anchor = this.cursor;
+    this.cursor += items.length;
+    this.commit(events);
+    return items.length;
+  }
+
+  // ------------------------------------------------------------ partitura
+
+  /** Muda a fórmula de compasso a partir do compasso do cursor. */
+  setTimeSignatureHere(ts: TimeSignature): void {
+    const m = this.cursorMeasure();
+    this.mutate((s) => setChange(s, m, { timeSignature: ts }));
+  }
+
+  /** Muda a tonalidade a partir do compasso do cursor. */
+  setKeyHere(fifths: Fifths): void {
+    const m = this.cursorMeasure();
+    this.mutate((s) => setChange(s, m, { keyFifths: fifths }));
+  }
+
+  addPart(instrumentId: string): void {
+    this.mutate((s) => s.parts.push(createPart(instrumentId, this.staff.measures.length)));
+  }
+
+  removePart(partIndex = this.pos.partIndex): void {
+    if (this.score.parts.length <= 1) return;
+    this.mutate((s) => s.parts.splice(partIndex, 1));
+    this.pos = { partIndex: Math.min(partIndex, this.score.parts.length - 1), staffIndex: 0, voiceIndex: 0 };
+    this.clampCursor();
+    this.emit();
+  }
+
+  /** Duração total já escrita na voz atual, em semibreves. */
   totalLength(): Fraction {
     return Fraction.sum(this.events().map((e) => e.length));
   }

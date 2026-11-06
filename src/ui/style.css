@@ -1044,5 +1044,66 @@ select {
 .ai-issues.muted { color: var(--muted); font-size: 13px; }
 .docs-body { display: grid; gap: 10px; }
 .doc-mode .dock, .doc-mode .status, .doc-mode .expr-panel { display: none; }
-.annot-on .stage { padding-top: 64px; }
 .annot-bar .swatch, .annot-bar .swatch.on, .annot-bar .swatch:hover { background: var(--c); }
+
+/* barra de marcações: topo (padrão), esquerda, direita ou embaixo */
+.annot-bar.pos-left, .annot-bar.pos-right {
+  top: 50%; transform: translateY(-50%);
+  display: grid; grid-template-columns: repeat(2, 36px); gap: 4px; justify-items: center;
+  max-height: calc(100vh - 96px); max-width: none; overflow-x: visible; overflow-y: auto;
+}
+.annot-bar.pos-left > .sep, .annot-bar.pos-right > .sep,
+.annot-bar.pos-left > .text-btn, .annot-bar.pos-right > .text-btn { grid-column: 1 / -1; }
+.annot-bar.pos-left { left: 12px; }
+.annot-bar.pos-right { left: auto; right: 12px; }
+.annot-bar.pos-left .sep, .annot-bar.pos-right .sep { width: auto; height: 1px; align-self: stretch; margin: 4px 2px; }
+.annot-bar.pos-left .stamp-group, .annot-bar.pos-right .stamp-group { grid-column: 1 / -1; }
+.annot-bar.pos-left .text-btn, .annot-bar.pos-right .text-btn { font-size: 12px; padding: 0 4px; width: 100%; }
+.annot-bar.pos-bottom { top: auto; bottom: 22px; }
+.bar-bottom:not(.doc-mode) .annot-bar.pos-bottom { bottom: 100px; } /* acima da barra de escrita */
+.bar-top .stage { padding-top: 64px; }
+.bar-left .stage { padding-left: 112px; }
+.bar-right .stage { padding-right: 112px; }
+.bar-top .toast { top: 124px; }
+.bar-bottom.doc-mode .stage { padding-bottom: 90px; }
+.annot-bar .stamp-group { display: flex; align-items: center; }
+.annot-bar .stamp-btn .stamp-glyph { font-size: 19px; line-height: 1; font-family: 'Segoe UI Symbol', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Noto Music', Bravura, sans-serif; }
+.annot-bar button.more { min-width: 20px; width: 20px; padding: 0; font-size: 11px; color: var(--muted); }
+.annot-bar .text-btn { white-space: nowrap; }
+.annot-pop {
+  position: fixed; z-index: 35; padding: 10px; border-radius: 14px; background: var(--paper);
+  border: 1px solid var(--line); box-shadow: 0 14px 40px rgb(0 0 0 / 0.22);
+  display: grid; gap: 10px; width: max-content; max-width: min(340px, calc(100vw - 16px));
+}
+.annot-pop[hidden] { display: none; }
+.annot-pop .pop-group { display: grid; gap: 6px; }
+.annot-pop small { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.annot-pop .pop-grid { display: grid; grid-template-columns: repeat(8, 36px); gap: 4px; }
+.annot-pop .pop-grid button {
+  height: 36px; border-radius: 9px; border: 1px solid transparent; background: none; cursor: pointer; font-size: 20px; line-height: 1;
+  font-family: 'Segoe UI Symbol', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', 'Noto Music', Bravura, sans-serif; color: var(--ink);
+}
+.annot-pop button:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+.annot-pop button.on { border-color: var(--accent); background: var(--accent-soft); }
+.annot-pop .pos-choice {
+  display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid transparent;
+  background: none; color: inherit; font: inherit; font-size: 14px; cursor: pointer; text-align: left;
+}
+.pos-ico { width: 22px; height: 16px; border: 1.5px solid currentColor; border-radius: 3px; position: relative; flex: none; opacity: .8; }
+.pos-ico::after { content: ''; position: absolute; background: var(--accent); border-radius: 1px; }
+.pos-ico-top::after { left: 2px; right: 2px; top: 2px; height: 3px; }
+.pos-ico-bottom::after { left: 2px; right: 2px; bottom: 2px; height: 3px; }
+.pos-ico-left::after { top: 2px; bottom: 2px; left: 2px; width: 3px; }
+.pos-ico-right::after { top: 2px; bottom: 2px; right: 2px; width: 3px; }
+.annot-sel { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; pointer-events: none; }
+.annot-layer.active[data-tool="move"] { cursor: default; }
+.annot-layer.active[data-tool="move"] [data-i] { cursor: grab; }
+.annot-layer.active[data-tool="stamp"] { cursor: copy; }
+.confirm-panel { width: min(440px, calc(100vw - 32px)); }
+.confirm-msg { margin: 0 0 18px; line-height: 1.5; }
+.icon-btn.danger { background: #c8402a; border-color: #c8402a; color: #fff; }
+.icon-btn.danger:hover { filter: brightness(1.05); }
+@media (max-width: 640px) {
+  .bar-left .stage { padding-left: 104px; padding-right: 8px; }
+  .bar-right .stage { padding-left: 8px; padding-right: 104px; }
+}

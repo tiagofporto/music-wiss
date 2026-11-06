@@ -28,8 +28,8 @@ import { ICON } from './ui/icons';
 import { exportMusicXml } from './io/musicxml-export';
 import { importMusicXml, readMusicXmlFile } from './io/musicxml-import';
 import { importMidi } from './io/midi-import';
-import type { Annotation, AnnotationTool, LayerState } from './annotate/annotations';
-import { ANNOTATION_COLORS, AnnotationLayer } from './annotate/annotations';
+import type { Annotation, AnnotationTool, LayerState, TextRequest } from './annotate/annotations';
+import { ANNOTATION_COLORS, AnnotationLayer, STAMP_FONT_EMOJI, STAMP_FONT_MONO, STAMP_GROUPS, stampTakesColor } from './annotate/annotations';
 import type { OpenDocument } from './doc/document';
 import { exportAnnotatedPdf, imageType, isPdf, openDocument, pagesAsJpeg } from './doc/document';
 import type { StoredDoc } from './doc/doc-store';
@@ -110,6 +110,7 @@ app.innerHTML = `
     </section>
   </main>
   <div class="annot-bar" role="toolbar" aria-label="Marcações" hidden></div>
+  <div class="annot-pop" hidden></div>
 
   <aside class="status" aria-live="polite"></aside>
   <section class="expr-panel" aria-label="Expressão" hidden></section>
@@ -178,6 +179,16 @@ app.innerHTML = `
       <h2>Documentos recentes</h2>
       <div class="docs-body"></div>
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="confirm" hidden>
+    <div class="panel dialog confirm-panel" role="alertdialog" aria-modal="true">
+      <h2></h2>
+      <p class="confirm-msg"></p>
+      <div class="dialog-actions">
+        <button type="button" class="icon-btn" data-confirm="cancel">Cancelar</button>
+        <button type="button" class="icon-btn danger" data-confirm="ok"></button>
+      </div>
     </div>
   </div>
   <div class="toast"></div>
@@ -365,9 +376,10 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return toggleMarking();
   }
-  if (marking && mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-    e.preventDefault();
-    return annotUndo();
+  if (marking) {
+    if (e.key === 'Escape') return toggleMarking(false);
+    if (onAnnotKey(e, mod)) return e.preventDefault();
+    if (!mod) return; // letras e setas não editam a partitura enquanto marca
   }
 
   if (mod && e.key.toLowerCase() === 'z') {
@@ -755,6 +767,13 @@ type DurationKey = '1' | '2' | '3' | '4' | '5' | '6';
 let muteNextSound = false;
 
 editor.onChange((change) => {
+  if (change.annotations) {
+    // só marcações: não redesenha a partitura (mantém o arrasto e a seleção)
+    scheduleCloudSave();
+    autosave();
+    scoreLayer?.draw();
+    return;
+  }
   if (muteNextSound) muteNextSound = false;
   else if (!change.remote) sound(change.sounded);
   if (!change.remote) scheduleCloudSave();
@@ -813,10 +832,15 @@ app.addEventListener('click', (e) => {
     case 'tie': return editor.toggleTie();
     case 'tuplet': return tuplet(3);
     case 'mark': return toggleMarking();
-    case 'annot-tool': return setAnnotTool(el.dataset.tool as AnnotationTool | 'hand');
+    case 'annot-tool': return setAnnotTool(el.dataset.tool as BarTool);
     case 'annot-color': return setAnnotColor(el.dataset.color!);
     case 'annot-undo': return annotUndo();
-    case 'annot-clear': return annotClear();
+    case 'annot-clear': return void annotClear();
+    case 'annot-pop': return toggleAnnotPop(el.dataset.pop as 'stamp' | 'pos');
+    case 'annot-stamp': return setStamp(el.dataset.stamp!);
+    case 'annot-pos': return setBarPos(el.dataset.pos as BarPos);
+    case 'annot-size': return annotResize(Number(el.dataset.f));
+    case 'annot-delete': return annotDelete();
     case 'annot-done': return docView ? closeDocView() : toggleMarking(false);
     case 'docs': closeMenu(); return void openRecentDocs();
     case 'doc-open': return void reopenDoc(el.dataset.id!);
@@ -834,6 +858,13 @@ app.addEventListener('click', (e) => {
     case 'export-pdf': closeMenu(); return void exportPdfFile();
     case 'export-xml': closeMenu(); return exportXml();
     case 'export-midi': closeMenu(); return exportMid();
+  }
+});
+
+document.addEventListener('pointerdown', (e) => {
+  if (annotPop && !(e.target as HTMLElement).closest('.annot-pop, [data-act="annot-pop"]')) {
+    annotPop = null;
+    renderAnnotBar();
   }
 });
 
@@ -1796,54 +1827,211 @@ function applyAssistant() {
 
 // ---------------------------------------------------------------- marcações (partitura e documentos)
 
-const annotState: LayerState = { tool: 'pen', color: ANNOTATION_COLORS[0] };
+type BarPos = 'top' | 'left' | 'right' | 'bottom';
+type BarTool = AnnotationTool | 'hand';
+const ANNOT_PREFS_KEY = 'music-wiss:annot-prefs';
+
+interface AnnotPrefs {
+  tool: AnnotationTool;
+  color: string;
+  stamp: string;
+  pos: BarPos;
+  marking: boolean;
+}
+
+function loadAnnotPrefs(): AnnotPrefs {
+  const d: AnnotPrefs = { tool: 'pen', color: ANNOTATION_COLORS[0], stamp: '→', pos: 'top', marking: false };
+  try {
+    const p = JSON.parse(localStorage.getItem(ANNOT_PREFS_KEY) ?? '{}') as Partial<AnnotPrefs>;
+    const tools: AnnotationTool[] = ['move', 'pen', 'highlight', 'text', 'stamp', 'erase'];
+    return {
+      tool: tools.includes(p.tool as AnnotationTool) ? (p.tool as AnnotationTool) : d.tool,
+      color: ANNOTATION_COLORS.includes(p.color ?? '') ? p.color! : d.color,
+      stamp: STAMP_GROUPS.some((g) => g.symbols.includes(p.stamp ?? '')) ? p.stamp! : d.stamp,
+      pos: (['top', 'left', 'right', 'bottom'] as BarPos[]).includes(p.pos as BarPos) ? (p.pos as BarPos) : d.pos,
+      marking: !!p.marking,
+    };
+  } catch {
+    return d;
+  }
+}
+
+const annotPrefs = loadAnnotPrefs();
+const annotState: LayerState = { tool: annotPrefs.tool, color: annotPrefs.color, stamp: annotPrefs.stamp };
+let barPos: BarPos = annotPrefs.pos;
 let annotHand = false;
 let marking = false;
 let scoreLayer: AnnotationLayer | null = null;
+/** Marcação selecionada na partitura (sobrevive ao redesenho). */
+let scoreSelected = -1;
+let annotSelected = -1;
+let annotPop: 'stamp' | 'pos' | null = null;
 const annotBar = $<HTMLElement>('.annot-bar');
+const annotPopEl = $<HTMLElement>('.annot-pop');
+
+function saveAnnotPrefs() {
+  safeSet(ANNOT_PREFS_KEY, JSON.stringify({ tool: annotState.tool, color: annotState.color, stamp: annotState.stamp, pos: barPos, marking }));
+}
 
 function attachScoreLayer() {
-  scoreLayer = new AnnotationLayer(scoreEl, annotState, () => editor.score.annotations ?? [], (list) => editor.setAnnotations(list), askAnnotText);
+  scoreLayer = new AnnotationLayer(
+    scoreEl,
+    annotState,
+    () => editor.score.annotations ?? [],
+    (list) => editor.setAnnotations(list),
+    askAnnotText,
+    (i) => {
+      scoreSelected = i;
+      setAnnotSelected(i);
+    },
+  );
   scoreLayer.setActive(marking && !annotHand);
+  if (marking && annotState.tool === 'move' && scoreSelected >= 0) {
+    scoreLayer.selected = scoreSelected;
+    scoreLayer.draw();
+  }
   scoreEl.classList.toggle('marking', marking);
 }
 
 function toggleMarking(on = !marking) {
   if (on && editor.inputMode) editor.toggleInputMode(false);
   marking = on;
+  scoreSelected = -1;
+  annotSelected = -1;
   if (on) annotHand = false;
+  annotPop = null;
+  saveAnnotPrefs();
   renderAnnotBar();
   render();
   if (on) toast('Marcando: desenhe por cima. M ou Concluir para voltar a editar.');
 }
 
+/** Camadas onde a ferramenta age agora (partitura ou páginas do documento). */
+function activeLayers(): AnnotationLayer[] {
+  if (docView) return docLayers;
+  return marking && scoreLayer ? [scoreLayer] : [];
+}
+
+function selectedLayer(): AnnotationLayer | null {
+  return activeLayers().find((l) => l.selected >= 0) ?? null;
+}
+
+function setAnnotSelected(i: number) {
+  if ((i >= 0) === (annotSelected >= 0)) {
+    annotSelected = i;
+    return;
+  }
+  annotSelected = i;
+  renderAnnotBar();
+}
+
+const BAR_POS_LABEL: Record<BarPos, string> = { top: 'No topo', left: 'À esquerda', right: 'À direita', bottom: 'Embaixo' };
+
 function renderAnnotBar() {
   const show = marking || !!docView;
   annotBar.hidden = !show;
   app.classList.toggle('annot-on', show);
+  for (const p of ['top', 'left', 'right', 'bottom'] as BarPos[]) app.classList.toggle(`bar-${p}`, show && barPos === p);
+  annotBar.className = `annot-bar pos-${barPos}`;
   $('.mark-btn').classList.toggle('on', marking);
-  if (!show) return;
-  const tools: Array<[AnnotationTool | 'hand', string, string]> = [
-    ...(docView ? ([['hand', ICON.hand, 'Mover a página (rolar)']] as Array<[AnnotationTool | 'hand', string, string]>) : []),
-    ['pen', ICON.pen, 'Caneta'],
-    ['highlight', ICON.highlight, 'Marca-texto'],
-    ['text', ICON.text, 'Texto (clique onde quer escrever)'],
-    ['erase', ICON.eraser, 'Borracha (passe por cima)'],
+  if (!show) {
+    annotPop = null;
+    renderAnnotPop();
+    return;
+  }
+  const tools: Array<[BarTool, string, string]> = [
+    ...(docView ? ([['hand', ICON.hand, 'Rolar a página (H)']] as Array<[BarTool, string, string]>) : []),
+    ['move', ICON.move, 'Mover: arraste uma marcação; duplo clique corrige texto (V)'],
+    ['pen', ICON.pen, 'Caneta (P)'],
+    ['highlight', ICON.highlight, 'Marca-texto (R)'],
+    ['text', ICON.text, 'Texto: clique para escrever ou para corrigir um texto (T)'],
+    ['erase', ICON.eraser, 'Borracha: passe por cima (E)'],
   ];
-  const current = annotHand ? 'hand' : annotState.tool;
+  const current: BarTool = annotHand ? 'hand' : annotState.tool;
+  const btn = ([t, ico, label]: [BarTool, string, string]) =>
+    `<button type="button" data-act="annot-tool" data-tool="${t}" class="${current === t ? 'on' : ''}" title="${label}" aria-pressed="${current === t}">${ico}</button>`;
+  const sel = annotSelected >= 0 && annotState.tool === 'move' && !annotHand;
   annotBar.innerHTML = `
-    ${tools.map(([t, ico, label]) => `<button type="button" data-act="annot-tool" data-tool="${t}" class="${current === t ? 'on' : ''}" title="${label}" aria-pressed="${current === t}">${ico}</button>`).join('')}
+    ${tools.map(btn).join('')}
+    <span class="stamp-group">
+      <button type="button" data-act="annot-tool" data-tool="stamp" class="stamp-btn ${current === 'stamp' ? 'on' : ''}" title="Selo: clique na página para colocar (S)" aria-pressed="${current === 'stamp'}"><span class="stamp-glyph" style="font-family:${stampTakesColor(annotState.stamp) ? STAMP_FONT_MONO : STAMP_FONT_EMOJI}">${escapeHtml(stampTakesColor(annotState.stamp) ? `${annotState.stamp}\uFE0E` : annotState.stamp)}</span></button>
+      <button type="button" data-act="annot-pop" data-pop="stamp" class="more ${annotPop === 'stamp' ? 'on' : ''}" title="Escolher o selo: setas, formas, notas musicais, atenção" aria-expanded="${annotPop === 'stamp'}">▾</button>
+    </span>
     <span class="sep"></span>
-    ${ANNOTATION_COLORS.map((c) => `<button type="button" data-act="annot-color" data-color="${c}" class="swatch ${annotState.color === c ? 'on' : ''}" style="--c:${c}" title="Cor" aria-pressed="${annotState.color === c}"></button>`).join('')}
+    ${ANNOTATION_COLORS.map((c) => `<button type="button" data-act="annot-color" data-color="${c}" class="swatch ${annotState.color === c ? 'on' : ''}" style="--c:${c}" title="${sel ? 'Mudar a cor da marcação selecionada' : 'Cor'}" aria-pressed="${annotState.color === c}"></button>`).join('')}
+    ${sel ? `<span class="sep"></span>
+    <button type="button" data-act="annot-size" data-f="0.8" title="Diminuir (−)">A−</button>
+    <button type="button" data-act="annot-size" data-f="1.25" title="Aumentar (+)">A+</button>
+    <button type="button" data-act="annot-delete" title="Apagar a selecionada (Delete)">${ICON.eraser}</button>` : ''}
     <span class="sep"></span>
-    <button type="button" data-act="annot-undo" title="Desfazer a última marcação (Ctrl Z)">${ICON.undo}</button>
-    <button type="button" data-act="annot-clear" class="text-btn" title="Apagar todas as marcações ${docView ? 'do documento' : 'da partitura'}">Limpar</button>
+    <button type="button" data-act="annot-undo" title="Desfazer (Ctrl Z)">${ICON.undo}</button>
+    <button type="button" data-act="annot-clear" class="text-btn" title="Apagar todas as marcações ${docView ? 'do documento' : 'da partitura'}">Limpar tudo</button>
+    <button type="button" data-act="annot-pop" data-pop="pos" class="${annotPop === 'pos' ? 'on' : ''}" title="Lugar da barra: ${BAR_POS_LABEL[barPos]}" aria-expanded="${annotPop === 'pos'}">${ICON.layout}</button>
     ${docView ? '' : '<button type="button" data-act="annot-done" class="text-btn strong">Concluir</button>'}`;
+  renderAnnotPop();
 }
 
-function setAnnotTool(t: AnnotationTool | 'hand') {
+function renderAnnotPop() {
+  annotPopEl.hidden = !annotPop;
+  if (!annotPop) return;
+  if (annotPop === 'stamp') {
+    annotPopEl.innerHTML = STAMP_GROUPS.map(
+      (g) => `<div class="pop-group"><small>${g.name}</small><div class="pop-grid">${g.symbols
+        .map((s) => {
+          const mono = stampTakesColor(s);
+          return `<button type="button" data-act="annot-stamp" data-stamp="${escapeHtml(s)}" class="${annotState.stamp === s ? 'on' : ''}" title="Selo ${escapeHtml(s)}" style="font-family:${mono ? STAMP_FONT_MONO : STAMP_FONT_EMOJI};${mono ? `color:${annotState.color}` : ''}">${escapeHtml(mono ? `${s}\uFE0E` : s)}</button>`;
+        })
+        .join('')}</div></div>`,
+    ).join('');
+  } else {
+    annotPopEl.innerHTML = `<div class="pop-group"><small>Lugar da barra</small>${(['top', 'left', 'right', 'bottom'] as BarPos[])
+      .map((p) => `<button type="button" data-act="annot-pos" data-pos="${p}" class="pos-choice ${barPos === p ? 'on' : ''}" aria-pressed="${barPos === p}"><span class="pos-ico pos-ico-${p}"></span>${BAR_POS_LABEL[p]}</button>`)
+      .join('')}</div>`;
+  }
+  // abre ao lado do botão, dentro da tela
+  const anchor = annotBar.querySelector<HTMLElement>(`[data-pop="${annotPop}"]`);
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  const pw = annotPopEl.offsetWidth;
+  const ph = annotPopEl.offsetHeight;
+  let x = r.left;
+  let y = r.bottom + 8;
+  if (barPos === 'bottom') y = r.top - ph - 8;
+  if (barPos === 'left') [x, y] = [r.right + 8, r.top];
+  if (barPos === 'right') [x, y] = [r.left - pw - 8, r.top];
+  x = Math.max(8, Math.min(window.innerWidth - pw - 8, x));
+  y = Math.max(8, Math.min(window.innerHeight - ph - 8, y));
+  annotPopEl.style.left = `${x}px`;
+  annotPopEl.style.top = `${y}px`;
+}
+
+function toggleAnnotPop(which: 'stamp' | 'pos') {
+  annotPop = annotPop === which ? null : which;
+  renderAnnotBar();
+}
+
+function setBarPos(p: BarPos) {
+  barPos = p;
+  annotPop = null;
+  saveAnnotPrefs();
+  renderAnnotBar();
+  if (docView) void renderDocPages(true);
+  else render();
+  toast(`Barra de marcações: ${BAR_POS_LABEL[p].toLowerCase()}`);
+}
+
+function setStamp(s: string) {
+  annotState.stamp = s;
+  annotPop = null;
+  setAnnotTool('stamp');
+}
+
+function setAnnotTool(t: BarTool) {
   annotHand = t === 'hand';
   if (t !== 'hand') annotState.tool = t;
+  annotSelected = -1;
+  scoreSelected = -1;
+  saveAnnotPrefs();
   renderAnnotBar();
   scoreLayer?.setActive(marking && !annotHand);
   docLayers.forEach((l) => l.setActive(!annotHand));
@@ -1851,42 +2039,97 @@ function setAnnotTool(t: AnnotationTool | 'hand') {
 
 function setAnnotColor(c: string) {
   annotState.color = c;
+  saveAnnotPrefs();
+  // com algo selecionado, a cor vale para ele
+  if (selectedLayer()?.recolorSelected(c)) return renderAnnotBar();
   if (annotHand) setAnnotTool(annotState.tool);
   renderAnnotBar();
+}
+
+function annotResize(f: number) {
+  selectedLayer()?.resizeSelected(f);
+}
+
+function annotDelete() {
+  selectedLayer()?.deleteSelected();
 }
 
 function annotUndo() {
   if (docView) {
     const last = docUndo.pop();
     if (!last || !docStored) return;
-    docStored.marks[last.page] = last.list;
+    for (const { page, list } of last) {
+      docStored.marks[page] = list;
+      docLayers[page]?.draw();
+    }
     persistDoc();
-    docLayers[last.page]?.draw();
     return;
   }
   editor.undo();
 }
 
-function annotClear() {
+function countMarks(): number {
+  if (docView) return Object.values(docStored?.marks ?? {}).reduce((n, l) => n + l.length, 0);
+  return editor.score.annotations?.length ?? 0;
+}
+
+async function annotClear() {
+  const n = countMarks();
+  const where = docView ? 'deste documento' : 'desta partitura';
+  if (!n) return toast(`Não há marcações ${where} para apagar`);
+  const ok = await askConfirm(
+    'Limpar tudo?',
+    `Todas as ${n === 1 ? '' : `${n} `}marcações ${where} serão apagadas${docView ? `, em todas as ${doc?.pages.length ?? 1} páginas` : ''}. As notas da partitura não mudam. Se mudar de ideia, Ctrl+Z (ou o botão desfazer) traz tudo de volta.`,
+    `Apagar ${n === 1 ? 'a marcação' : `as ${n} marcações`}`,
+  );
+  if (!ok) return;
   if (docView && docStored) {
-    if (!Object.values(docStored.marks).some((l) => l.length)) return;
-    if (!confirm('Apagar todas as marcações deste documento?')) return;
-    Object.entries(docStored.marks).forEach(([k, v]) => docUndo.push({ page: Number(k), list: v }));
+    docUndo.push(Object.entries(docStored.marks).map(([k, v]) => ({ page: Number(k), list: v })));
     docStored.marks = {};
     persistDoc();
     docLayers.forEach((l) => l.draw());
-    return;
+  } else {
+    editor.setAnnotations([]);
   }
-  if (editor.score.annotations?.length) editor.setAnnotations([]); // Ctrl+Z traz de volta
+  toast('Marcações apagadas. Ctrl+Z desfaz.');
 }
 
-/** Caixinha para digitar uma nota de texto onde a pessoa clicou. */
-function askAnnotText(at: { clientX: number; clientY: number }): Promise<string | null> {
+/** Teclas enquanto marca (na partitura ou no documento). */
+function onAnnotKey(e: KeyboardEvent, mod: boolean): boolean {
+  const k = e.key;
+  if (mod && k.toLowerCase() === 'z' && !e.shiftKey) {
+    annotUndo();
+    return true;
+  }
+  if (mod) return false;
+  const layer = selectedLayer();
+  if (layer) {
+    const step = e.shiftKey ? 0.02 : 0.004;
+    if (k === 'Delete' || k === 'Backspace') return layer.deleteSelected();
+    if (k === '+' || k === '=') return layer.resizeSelected(1.15);
+    if (k === '-' || k === '_') return layer.resizeSelected(1 / 1.15);
+    if (k === 'ArrowLeft') return layer.nudgeSelected(-step, 0);
+    if (k === 'ArrowRight') return layer.nudgeSelected(step, 0);
+    if (k === 'ArrowUp') return layer.nudgeSelected(0, -step);
+    if (k === 'ArrowDown') return layer.nudgeSelected(0, step);
+  }
+  const tools: Record<string, BarTool> = { v: 'move', p: 'pen', r: 'highlight', t: 'text', s: 'stamp', e: 'erase', ...(docView ? { h: 'hand' } : {}) };
+  const t = tools[k.toLowerCase()];
+  if (t && !e.altKey) {
+    setAnnotTool(t);
+    return true;
+  }
+  return false;
+}
+
+/** Caixinha para digitar (ou corrigir) uma nota de texto onde a pessoa clicou. */
+function askAnnotText(at: TextRequest): Promise<string | null> {
   return new Promise((resolve) => {
     const input = document.createElement('input');
     input.className = 'annot-input';
-    input.placeholder = 'Escreva e aperte Enter';
-    input.style.left = `${at.clientX}px`;
+    input.placeholder = at.initial ? 'Corrija e aperte Enter (vazio apaga)' : 'Escreva e aperte Enter';
+    input.value = at.initial ?? '';
+    input.style.left = `${Math.min(at.clientX, window.innerWidth - 240)}px`;
     input.style.top = `${at.clientY - 14}px`;
     input.style.color = annotState.color;
     document.body.appendChild(input);
@@ -1902,8 +2145,33 @@ function askAnnotText(at: { clientX: number; clientY: number }): Promise<string 
       if (e.key === 'Enter') finish(input.value);
       else if (e.key === 'Escape') finish(null);
     });
-    input.addEventListener('blur', () => finish(input.value));
+    input.addEventListener('blur', () => finish(at.initial !== undefined ? null : input.value));
     input.focus();
+    input.select();
+  });
+}
+
+/** Pergunta de confirmação no estilo do app (sem a caixa do navegador). */
+function askConfirm(title: string, message: string, okLabel: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ov = openOverlay('confirm');
+    ov.querySelector('h2')!.textContent = title;
+    ov.querySelector('.confirm-msg')!.textContent = message;
+    const ok = ov.querySelector<HTMLButtonElement>('[data-confirm="ok"]')!;
+    ok.textContent = okLabel;
+    const cancel = ov.querySelector<HTMLButtonElement>('[data-confirm="cancel"]')!;
+    const done = (v: boolean) => {
+      ok.onclick = cancel.onclick = null;
+      observer.disconnect();
+      closeOverlays();
+      resolve(v);
+    };
+    ok.onclick = () => done(true);
+    cancel.onclick = () => done(false);
+    // fechado por Esc ou clique fora = cancelar
+    const observer = new MutationObserver(() => ov.hidden && done(false));
+    observer.observe(ov, { attributes: true, attributeFilter: ['hidden'] });
+    cancel.focus();
   });
 }
 
@@ -1913,7 +2181,9 @@ let doc: OpenDocument | null = null;
 let docStored: StoredDoc | null = null;
 let docView = false;
 let docLayers: AnnotationLayer[] = [];
-let docUndo: Array<{ page: number; list: Annotation[] }> = [];
+/** Cada passo do desfazer pode mexer em várias páginas (ex.: Limpar tudo). */
+let docUndo: Array<Array<{ page: number; list: Annotation[] }>> = [];
+const OPEN_DOC_KEY = 'music-wiss:open-doc';
 let docSaveTimer = 0;
 let docRenderToken = 0;
 const docViewEl = $<HTMLElement>('.doc-view');
@@ -1922,39 +2192,51 @@ const docPagesEl = $<HTMLElement>('.doc-pages');
 async function openDoc(name: string, bytes: Uint8Array) {
   stopPlayback();
   const opened = await openDocument(name, bytes);
+  if (docView) flushDoc(); // grava o documento anterior antes de trocar
   doc?.destroy();
   doc = opened;
   const id = await docId(bytes);
   docStored = (await loadDoc(id)) ?? { id, name, bytes, marks: {}, updatedAt: Date.now() };
   docStored.name = name;
   docUndo = [];
-  annotState.tool = 'pen';
   analysis = null;
   analysisError = '';
   persistDoc(0);
-  showDocView();
+  safeSet(OPEN_DOC_KEY, id);
+  showDocView(true);
   const n = opened.pages.length;
   const marked = Object.values(docStored.marks).some((l) => l.length);
-  toast(`${opened.kind === 'pdf' ? `PDF com ${n} ${n === 1 ? 'página' : 'páginas'}` : 'Imagem aberta'}${marked ? ' (com suas marcações)' : ''}. Marque por cima ou peça para a IA ler.`);
+  toast(
+    marked
+      ? `Suas marcações voltaram${docStored.view ? ' e a página está onde você parou' : ''}. Use Mover para ajustar ou corrigir.`
+      : `${opened.kind === 'pdf' ? `PDF com ${n} ${n === 1 ? 'página' : 'páginas'}` : 'Imagem aberta'}. Marque por cima ou peça para a IA ler.`,
+  );
 }
 
-function showDocView() {
+function showDocView(restore = false) {
   if (!doc) return;
   if (marking) marking = false;
   docView = true;
   annotHand = false;
-  if (annotState.tool === 'erase') annotState.tool = 'pen';
+  annotSelected = -1;
   $('.sheet').hidden = true;
   docViewEl.hidden = false;
   app.classList.add('doc-mode');
   $('.doc-name').textContent = doc.name;
   renderAnnotBar();
-  void renderDocPages();
+  void renderDocPages(false, restore);
 }
 
 function closeDocView() {
   if (!docView) return;
+  saveDocScroll();
+  try {
+    localStorage.removeItem(OPEN_DOC_KEY);
+  } catch {
+    /* sem armazenamento */
+  }
   docView = false;
+  annotSelected = -1;
   docViewEl.hidden = true;
   $('.sheet').hidden = false;
   app.classList.remove('doc-mode');
@@ -1964,9 +2246,16 @@ function closeDocView() {
   render();
 }
 
-async function renderDocPages() {
+/**
+ * Desenha as páginas. keepScroll mantém o ponto da leitura (ao redimensionar
+ * ou mudar a barra de lugar); restore volta para onde a pessoa parou.
+ */
+async function renderDocPages(keepScroll = false, restore = false) {
   if (!doc || !docStored) return;
   const token = ++docRenderToken;
+  const docTop = () => docPagesEl.getBoundingClientRect().top + window.scrollY;
+  const oldHeight = docPagesEl.scrollHeight;
+  const ratio = keepScroll && oldHeight ? (window.scrollY - docTop()) / oldHeight : null;
   const width = Math.min(1000, Math.max(280, docPagesEl.clientWidth - 8));
   docPagesEl.innerHTML = '';
   docLayers = [];
@@ -1985,15 +2274,23 @@ async function renderDocPages() {
       annotState,
       () => stored.marks[i] ?? [],
       (list) => {
-        docUndo.push({ page: i, list: stored.marks[i] ?? [] });
+        docUndo.push([{ page: i, list: stored.marks[i] ?? [] }]);
         stored.marks[i] = list;
         persistDoc();
       },
       askAnnotText,
+      (sel) => {
+        // só uma marcação selecionada por vez, entre todas as páginas
+        if (sel >= 0) docLayers.forEach((l) => l !== layer && l.selected >= 0 && ((l.selected = -1), l.draw()));
+        setAnnotSelected(sel >= 0 ? sel : docLayers.some((l) => l.selected >= 0) ? 0 : -1);
+      },
     );
     layer.setActive(!annotHand);
     docLayers.push(layer);
   }
+  if (ratio !== null) window.scrollTo(0, docTop() + ratio * docPagesEl.scrollHeight);
+  else if (restore && stored.view) window.scrollTo(0, docTop() + stored.view.scroll * docPagesEl.scrollHeight);
+  else window.scrollTo(0, 0);
   // desenha as páginas uma por vez (as primeiras aparecem logo)
   for (let i = 0; i < doc.pages.length; i++) {
     if (token !== docRenderToken) return;
@@ -2008,11 +2305,13 @@ async function renderDocPages() {
   }
 }
 
+/** Grava o documento logo depois da mudança (vários ajustes seguidos viram uma gravação só). */
 function persistDoc(delay = 500) {
-  if (!docStored) return;
-  clearTimeout(docSaveTimer);
-  const d = docStored;
-  docSaveTimer = window.setTimeout(() => void saveDoc({ ...d, updatedAt: Date.now() }), delay);
+  if (!docStored || docSaveTimer) return; // já tem gravação marcada: ela leva o estado mais novo
+  docSaveTimer = window.setTimeout(() => {
+    docSaveTimer = 0;
+    if (docStored) void saveDoc({ ...docStored, updatedAt: Date.now() });
+  }, delay);
 }
 
 function onDocKey(e: KeyboardEvent, mod: boolean) {
@@ -2024,10 +2323,58 @@ function onDocKey(e: KeyboardEvent, mod: boolean) {
     e.preventDefault();
     return $<HTMLInputElement>('[data-file]').click();
   }
-  if (e.key === 'Escape') return closeDocView();
-  const tools: Record<string, AnnotationTool | 'hand'> = { p: 'pen', m: 'highlight', t: 'text', e: 'erase', h: 'hand' };
-  const t = tools[e.key.toLowerCase()];
-  if (t && !mod && !e.altKey) setAnnotTool(t);
+  if (e.key === 'Escape') {
+    if (annotPop) {
+      annotPop = null;
+      return renderAnnotBar();
+    }
+    return closeDocView();
+  }
+  if (onAnnotKey(e, mod)) e.preventDefault();
+}
+
+/** Guarda em que ponto do documento a pessoa estava (para voltar ali). */
+function saveDocScroll() {
+  if (!docView || !docStored) return;
+  const h = docPagesEl.scrollHeight;
+  if (!h) return;
+  const top = docPagesEl.getBoundingClientRect().top + window.scrollY;
+  docStored.view = { scroll: Math.max(0, (window.scrollY - top) / h) };
+  persistDoc();
+}
+let docScrollTimer = 0;
+window.addEventListener('scroll', () => {
+  if (!docView) return;
+  clearTimeout(docScrollTimer);
+  docScrollTimer = window.setTimeout(saveDocScroll, 400);
+});
+/** Grava já (sem esperar), ao sair ou trocar de aba. */
+function flushDoc() {
+  if (!docStored) return;
+  saveDocScroll();
+  clearTimeout(docSaveTimer);
+  docSaveTimer = 0;
+  void saveDoc({ ...docStored, updatedAt: Date.now() });
+}
+window.addEventListener('pagehide', flushDoc);
+document.addEventListener('visibilitychange', () => document.visibilityState === 'hidden' && flushDoc());
+
+/** Ao voltar ao app, reabre o documento que estava aberto, no mesmo ponto. */
+async function resumeOpenDoc() {
+  let id: string | null = null;
+  try {
+    id = localStorage.getItem(OPEN_DOC_KEY);
+  } catch {
+    /* sem armazenamento */
+  }
+  if (!id || cloud.parseShareHash(location.hash)) return;
+  const d = await loadDoc(id);
+  if (!d) return;
+  try {
+    await openDoc(d.name, d.bytes);
+  } catch {
+    /* documento não abre mais: segue na partitura */
+  }
 }
 
 async function exportDoc() {
@@ -2190,7 +2537,7 @@ let docResizeTimer = 0;
 window.addEventListener('resize', () => {
   if (!docView) return;
   clearTimeout(docResizeTimer);
-  docResizeTimer = window.setTimeout(() => void renderDocPages(), 200);
+  docResizeTimer = window.setTimeout(() => void renderDocPages(true), 200);
 });
 
 // ---------------------------------------------------------------- início
@@ -2207,3 +2554,5 @@ updatePlayButton();
 document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light'));
 applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');
 void initCloud();
+if (annotPrefs.marking) toggleMarking(true);
+void resumeOpenDoc();

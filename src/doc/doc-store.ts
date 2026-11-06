@@ -12,6 +12,8 @@ export interface StoredDoc {
   bytes: Uint8Array;
   marks: Record<number, Annotation[]>;
   updatedAt: number;
+  /** Onde a pessoa parou: rolagem como fração da altura das páginas. */
+  view?: { scroll: number };
 }
 
 const DB = 'music-wiss-docs';

@@ -43,6 +43,19 @@ export function durationValue(d: Duration): Fraction {
 }
 
 /**
+ * Como `decompose`, mas arredonda para a grade de fusas quando a fração não é
+ * representável (útil ao importar arquivos com durações incomuns).
+ */
+export function decomposeApprox(value: Fraction): Duration[] {
+  try {
+    return decompose(value);
+  } catch {
+    const n = Math.round(value.toNumber() * 32);
+    return n > 0 ? decompose(new Fraction(n, 32)) : [];
+  }
+}
+
+/**
  * Decompõe uma fração em figuras válidas (maiores primeiro), usada para
  * dividir uma nota que atravessa a barra de compasso em notas ligadas.
  * Usa ponto de aumento simples quando o resultado fica exato.

@@ -49,6 +49,17 @@ Fórmula de compasso, tonalidade e instrumentos novos ficam na paleta de comando
 
 A partitura é salva automaticamente no navegador.
 
+## Abrir e exportar
+
+No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela paleta):
+
+| Formato | Abrir | Exportar | Observações |
+| --- | --- | --- | --- |
+| `.wiss.json` | ✓ | ✓ | Formato nativo, sem perdas |
+| MusicXML (`.musicxml`, `.xml`, `.mxl`) | ✓ | ✓ | Notas, acordes, até 4 vozes, 2 pautas por instrumento, ligaduras, quiálteras, mudanças de compasso/tom, andamento e transposição. O que o editor ainda não tem (dinâmicas, letra, articulações) é ignorado na importação, com aviso |
+| MIDI (`.mid`) | | ✓ | Formato 1, uma trilha por instrumento, com programa General MIDI, andamento e fórmulas de compasso |
+| PDF | | ✓ | A4, título na 1ª página, sistemas sem corte entre páginas, numeração |
+
 ## Arquitetura
 
 ```
@@ -67,6 +78,7 @@ src/
   render/     Layout da página (largura dos compassos, quebra de linha, justificação)
               + desenho com VexFlow e fonte SMuFL Bravura
   audio/      Sequenciador (partitura → notas no tempo) e sintetizador Web Audio
+  io/         MusicXML (exportar/importar, .mxl), MIDI e PDF
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos
 ```
@@ -94,7 +106,7 @@ src/
 
 ## Próximos passos
 
-- Fase 2: importar/exportar MusicXML e MIDI; exportar PDF com páginas.
+- Fase 2: ~~importar/exportar MusicXML, exportar MIDI e PDF~~ (feito); importar MIDI fica para depois.
 - Fase 3: som com soundfonts (SF2/SF3) e entrada por teclado MIDI (Web MIDI).
 - Fase 4: dinâmicas, articulações, letra, cifras e barras de repetição.
 - Fase 5: contas, nuvem, compartilhamento, colaboração e assistência com IA.

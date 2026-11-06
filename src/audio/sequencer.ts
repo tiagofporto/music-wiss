@@ -25,48 +25,67 @@ export function secondsPerWhole(score: Score): number {
   return (60 / score.tempo) * 4;
 }
 
+/** Uma nota a tocar, em semibreves desde o início da música. */
+export interface TimedNote {
+  partIndex: number;
+  midi: number;
+  start: Fraction;
+  length: Fraction;
+  velocity: number;
+}
+
 /**
  * Varre a partitura (todas as pautas e vozes) em ordem cronológica e gera as
  * notas a tocar, juntando notas ligadas e aplicando a transposição do instrumento.
+ * Também devolve todos os momentos em que algum evento começa.
  */
-export function schedule(score: Score, from: Fraction = Fraction.ZERO): PlaybackPlan {
-  const spw = secondsPerWhole(score);
-  const offset = from.toNumber();
-  const notes: ScheduledNote[] = [];
-  const times = new Set<number>();
-  let end = 0;
-
-  for (const part of score.parts) {
+export function collectNotes(score: Score): { notes: TimedNote[]; onsets: Fraction[]; end: Fraction } {
+  const notes: TimedNote[] = [];
+  const onsets = new Map<string, Fraction>();
+  let end = Fraction.ZERO;
+  score.parts.forEach((part, partIndex) => {
     for (const staff of part.staves) {
       for (let v = 0; v < MAX_VOICES; v++) {
-        const events = readLogical(staff, v);
         let t = Fraction.ZERO;
-        const open = new Map<number, ScheduledNote>(); // notas ligadas esperando continuação
-        for (const ev of events) {
-          const len = ev.length.toNumber() * spw;
-          if (t.gte(from)) {
-            times.add(t.toNumber());
-            for (const n of ev.notes) {
-              const midi = toMidi(n.pitch) + part.transposition;
-              const cont = open.get(midi);
-              if (cont) {
-                cont.duration += len;
-                open.delete(midi);
-                if (n.tieToNext) open.set(midi, cont);
-                continue;
-              }
-              const sn = { midi, start: (t.toNumber() - offset) * spw, duration: len, program: part.midiProgram };
-              notes.push(sn);
-              if (n.tieToNext) open.set(midi, sn);
+        const open = new Map<number, TimedNote>(); // notas ligadas esperando continuação
+        for (const ev of readLogical(staff, v)) {
+          onsets.set(t.toString(), t);
+          for (const n of ev.notes) {
+            const midi = toMidi(n.pitch) + part.transposition;
+            const cont = open.get(midi);
+            if (cont) {
+              cont.length = cont.length.add(ev.length);
+              open.delete(midi);
+              if (n.tieToNext) open.set(midi, cont);
+              continue;
             }
+            const tn: TimedNote = { partIndex, midi, start: t, length: ev.length, velocity: 80 };
+            notes.push(tn);
+            if (n.tieToNext) open.set(midi, tn);
           }
           t = t.add(ev.length);
         }
-        end = Math.max(end, t.toNumber());
+        if (t.gt(end)) end = t;
       }
     }
-  }
+  });
+  notes.sort((a, b) => a.start.compare(b.start) || a.midi - b.midi);
+  return { notes, onsets: [...onsets.values()].sort((a, b) => a.compare(b)), end };
+}
 
-  const steps = [...times].sort((a, b) => a - b).map((time) => ({ at: (time - offset) * spw, time }));
-  return { notes, steps, total: Math.max(0, (end - offset) * spw) };
+/** Plano de reprodução a partir de um momento (em semibreves). */
+export function schedule(score: Score, from: Fraction = Fraction.ZERO): PlaybackPlan {
+  const spw = secondsPerWhole(score);
+  const offset = from.toNumber();
+  const { notes, onsets, end } = collectNotes(score);
+  const playable = notes
+    .filter((n) => n.start.gte(from))
+    .map((n) => ({
+      midi: n.midi,
+      start: (n.start.toNumber() - offset) * spw,
+      duration: n.length.toNumber() * spw,
+      program: score.parts[n.partIndex].midiProgram,
+    }));
+  const steps = onsets.filter((t) => t.gte(from)).map((t) => ({ at: (t.toNumber() - offset) * spw, time: t.toNumber() }));
+  return { notes: playable, steps, total: Math.max(0, (end.toNumber() - offset) * spw) };
 }

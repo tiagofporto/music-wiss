@@ -648,3 +648,96 @@ select {
 .pick input:focus-visible + span {
   outline: 2px solid var(--accent);
 }
+
+/* ---------- menu Arquivo ---------- */
+.menu {
+  position: relative;
+}
+
+.menu-list {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 40;
+  min-width: 290px;
+  padding: 6px;
+  border: 1px solid var(--paper-edge);
+  border-radius: 14px;
+  background: var(--paper);
+  box-shadow: var(--shadow);
+}
+
+.menu-list[hidden] {
+  display: none;
+}
+
+.menu-list button {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.menu-list button:hover {
+  background: var(--chip);
+}
+
+.menu-list button > :first-child {
+  grid-row: 1 / 3;
+  justify-self: center;
+}
+
+.menu-list svg {
+  width: 18px;
+  height: 18px;
+}
+
+.menu-list span {
+  font-weight: 600;
+}
+
+.menu-list small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.menu-list .fmt {
+  padding: 2px 4px;
+  border: 1.5px solid currentColor;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+}
+
+.menu-list hr {
+  margin: 6px 4px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.drop-hint {
+  position: fixed;
+  inset: 12px;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--accent-soft) 70%, transparent);
+  font-family: var(--font-title);
+  font-size: 26px;
+  pointer-events: none;
+}
+
+.drop-hint[hidden] {
+  display: none;
+}

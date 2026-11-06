@@ -49,6 +49,21 @@ Fórmula de compasso, tonalidade e instrumentos novos ficam na paleta de comando
 
 A partitura é salva automaticamente no navegador.
 
+## Minhas partituras
+
+Botão **Partituras** no topo (ou Ctrl+Shift+O, ou Arquivo → Minhas
+partituras). Toda partitura criada, aberta de um arquivo ou vinda da nuvem fica
+guardada neste navegador e é salva sozinha enquanto você escreve (partituras
+novas ainda vazias e sem título não entram).
+
+- Lista com título, compositor, instrumentos, compassos e quando foi editada;
+  a aberta aparece marcada. Busca por título ou compositor (sem acento).
+- **Abrir**, **fazer uma cópia** e **apagar** (com confirmação e **Desfazer**
+  logo em seguida). Apagar a partitura aberta abre a mais recente.
+- Os PDFs e fotos abertos aparecem na mesma tela e também podem ser apagados
+  (as marcações vão junto; o arquivo original no aparelho não muda).
+- As partituras da sua conta continuam em **Nuvem**, onde também dá para apagar.
+
 ## Abrir e exportar
 
 No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela paleta):
@@ -107,6 +122,56 @@ O botão **Som** abre o painel de áudio:
   e transcreve as notas. Também aponta o que conferir e sugere edições. A
   partitura transcrita abre editável e toca. Compassos que não fecham são
   completados com pausas e avisados.
+
+## Aba Editar (PDF e fotos)
+
+No topo ficam três abas: **Escrever** (o editor de notas), **Editar** e
+**Tocar**. A aba **Editar** (Ctrl+Shift+E) é onde se trabalha em cima de uma
+partitura que já existe em PDF ou foto:
+
+- **Carregar PDF ou foto** (clicar, arrastar ou Ctrl+O). Um PDF aberto pelo
+  menu Arquivo em Escrever também vem para cá.
+- Marcar com caneta, marca-texto, texto, selos e borracha; mover e corrigir
+  depois; a barra pode ficar no topo, nos lados ou embaixo.
+- **Ler e analisar com IA** transforma as notas em partitura editável, que
+  abre em Escrever.
+- **Baixar com marcações** gera o PDF marcado.
+- **Fechar documento** volta para a lista **Seus documentos**, com abrir e
+  apagar. Trocar de aba e voltar reabre o documento onde você parou, e
+  recarregar a página também.
+
+## Aba Tocar (palco)
+
+No topo há duas abas: **Escrever** (o editor) e **Tocar**, para ler e tocar
+a partitura sem distrações. O botão que toca o som agora se chama **Ouvir**.
+
+- **Partitura limpa**: sem barra de escrita, cursor ou avisos; as marcações à
+  mão aparecem, só para ver.
+- **Tela cheia** (botão ou F): esconde tudo menos a partitura. Mexer o mouse
+  ou tocar na tela mostra uma barra pequena (zoom, ouvir, anterior/próxima,
+  sair). Esc sai. No iPhone, onde o navegador não deixa tela cheia, a página
+  esconde as próprias barras.
+- **Zoom**: −, + e o número do meio (ajustar à largura). Também com as teclas
+  + − 0 ou Ctrl + roda do mouse. O zoom escolhido fica guardado.
+- **Virar página**: setas, PgDn/PgUp (pedais bluetooth de virar página mandam
+  essas teclas). No fim da partitura, avança para a próxima do evento.
+- **Carregar**: abre no palco qualquer partitura do aparelho (PDF, foto,
+  MusicXML, MIDI ou .wiss.json), não só as criadas aqui. Pode escolher vários
+  arquivos de uma vez e passar com ‹ ›; arrastar um arquivo para a página
+  também funciona. PDF e foto aparecem como estão, com as marcações feitas em
+  Escrever; MusicXML e MIDI viram partitura e dá para ouvir.
+- **Eventos**: crie um evento (nome, data, local) e adicione as partituras do
+  repertório (as abertas ou **Carregar arquivos**, direto do aparelho). Uma cópia de cada partitura fica salva no aparelho e funciona
+  sem internet; abra com um toque, reordene, tire, ou use **Atualizar** depois
+  de editar. Os próximos eventos aparecem primeiro. **Editar** leva a
+  partitura do evento para a aba Escrever.
+- **WhatsApp**: gera o PDF. No celular abre o compartilhar do sistema com o
+  PDF anexado (escolha o WhatsApp). No computador o PDF é baixado e o WhatsApp
+  abre com a mensagem pronta; é só anexar o arquivo. Se a partitura está na
+  sua nuvem, o link para ver vai junto.
+- **Sugestão** (balão): nota de 1 a 5 e texto. Conectado, vai para a tabela
+  `feedback` (só inserir; ninguém lê pelo app). Sem conta, fica guardada no
+  aparelho e é enviada quando a pessoa entrar.
 
 ## Nuvem, compartilhamento e assistente
 
@@ -175,6 +240,8 @@ src/
   cloud/      Conta, partituras na nuvem, links e tempo real (Supabase, carregado sob demanda)
   ai/         Resumo da partitura para o assistente e leitura da transcrição da IA
   annotate/   Marcações à mão (caneta, marca-texto, texto, borracha)
+  library/    Minhas partituras: biblioteca local (IndexedDB) com busca, cópia e apagar
+  perform/    Aba Tocar: eventos (repertórios no IndexedDB) e envio do PDF pelo WhatsApp
   doc/        PDF (pdf.js, sob demanda) e fotos: páginas, documentos guardados, exportar
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos

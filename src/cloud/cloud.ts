@@ -290,3 +290,23 @@ export async function askTranscription(images: string[], hint: string): Promise<
     suggestions: t.suggestions ?? [],
   };
 }
+
+// ---------------------------------------------------------------- sugestões
+
+export interface FeedbackInput {
+  rating: number | null;
+  message: string;
+  context: string;
+}
+
+/** Envia uma sugestão (precisa estar conectado). */
+export async function sendFeedback(f: FeedbackInput, appVersion = ''): Promise<void> {
+  const sb = await need();
+  const { error } = await sb.from('feedback').insert({
+    rating: f.rating,
+    message: f.message.slice(0, 2000),
+    context: f.context.slice(0, 60),
+    app_version: appVersion.slice(0, 40),
+  });
+  if (error) throw new Error(friendlyError(error));
+}

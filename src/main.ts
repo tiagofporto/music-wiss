@@ -37,6 +37,12 @@ import { deleteDoc, docId, listDocs, loadDoc, saveDoc } from './doc/doc-store';
 import type { Transcription } from './ai/transcription';
 import { transcriptionToScore } from './ai/transcription';
 import { exportMidi } from './io/midi';
+import type { EventItem, PerformEvent } from './perform/events';
+import { addDoc, addItem, addScore, createEvent, deleteEvent, formatEventDate, listEvents, moveItem, removeItem, saveEvent } from './perform/events';
+import { sharePdfToWhatsApp } from './perform/share';
+import type { LibraryEntry } from './library/library';
+import { deleteFromLibrary, filterLibrary, getEntry, listLibrary, putEntry, saveToLibrary, toEntry } from './library/library';
+import type { FeedbackInput } from './cloud/cloud';
 
 const STORAGE_KEY = 'music-wiss:score';
 const THEME_KEY = 'music-wiss:theme';
@@ -50,6 +56,28 @@ let midiDevices: string[] = [];
 let soundLoading: string | null = null;
 let lastRender: RenderResult | null = null;
 let playing: { timers: number[]; time: number | null } | null = null;
+/** A reprodução atual é da partitura do palco (aba Tocar). */
+let playingStage = false;
+const APP_VERSION = '0.1.0';
+
+// aba Tocar
+type Tab = 'write' | 'edit' | 'perform';
+const TAB_KEY = 'music-wiss:tab';
+const ZOOM_KEY = 'music-wiss:perform-zoom';
+const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2, 2.5, 3];
+let tab: Tab = 'write';
+/** null = ajustar à largura da tela. */
+let performZoom: number | null = loadZoom();
+/** Largura em que a folha é desenhada na edição (as marcações à mão dependem dela). */
+let layoutWidth = 1018;
+/** Partitura de um evento aberta no palco (null = a partitura em edição). */
+let stageItem: { event: PerformEvent; index: number } | null = null;
+let immersive = false;
+let floatTimer = 0;
+let events: PerformEvent[] = [];
+let eventsOpen = false;
+let openEventId: string | null = null;
+let creatingEvent = false;
 
 // ---------------------------------------------------------------- DOM
 
@@ -57,13 +85,20 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
     <div class="brand"><img src="/favicon.svg" alt="" /><span>Music Wiss</span></div>
+    <div class="tabs" role="tablist" aria-label="Modo">
+      <button class="tab on" role="tab" aria-selected="true" data-act="tab" data-tab="write" title="Escrever e editar a partitura">${ICON.pen}<span>Escrever</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="edit" title="Editar PDF e fotos: marcar, selos, ler com IA (Ctrl+Shift+E)">${ICON.doc}<span>Editar</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="perform" title="Tocar: partitura limpa, tela cheia e eventos (Ctrl+Shift+P)">${ICON.music}<span>Tocar</span></button>
+    </div>
     <div class="spacer"></div>
     <button class="icon-btn" data-act="palette" title="Paleta de comandos (Ctrl+K)">${ICON.search}<span>Comandos</span><span class="kbd">Ctrl K</span></button>
     <button class="icon-btn" data-act="new" title="Nova partitura">${ICON.plus}<span>Nova</span></button>
+    <button class="icon-btn" data-act="library" title="Minhas partituras: ver, abrir e apagar (Ctrl+Shift+O)">${ICON.folder}<span>Partituras</span></button>
     <div class="menu">
       <button class="icon-btn" data-act="file-menu" aria-haspopup="true" title="Abrir e exportar">${ICON.download}<span>Arquivo</span></button>
       <div class="menu-list" hidden>
         <button data-act="open">${ICON.upload}<span>Abrir…</span><small>MusicXML, MIDI, PDF, foto, .wiss.json</small></button>
+        <button data-act="library">${ICON.folder}<span>Minhas partituras</span><small>ver, abrir e apagar</small></button>
         <button data-act="docs">${ICON.doc}<span>Documentos recentes</span><small>PDFs e fotos com marcações</small></button>
         <button data-act="save">${ICON.download}<span>Salvar</span><small>.wiss.json · Ctrl S</small></button>
         <hr />
@@ -77,7 +112,7 @@ app.innerHTML = `
     <button class="icon-btn cloud-btn" data-act="cloud" title="Nuvem: conta, partituras e compartilhar">${ICON.cloud}<span>Nuvem</span><span class="cloud-dot" hidden></span></button>
     <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
-    <button class="icon-btn primary" data-act="play" title="Tocar (Espaço)"></button>
+    <button class="icon-btn primary" data-act="play" title="Ouvir a partitura (Espaço)"></button>
   </header>
 
   <main class="stage">
@@ -97,18 +132,75 @@ app.innerHTML = `
         Veja todos os atalhos com <span class="kbd">?</span>.
       </div>
     </article>
+    <section class="edit-home" hidden aria-label="Editar PDF e fotos">
+      <div class="edit-hero">
+        <h1>Editar PDF e fotos</h1>
+        <p>Carregue a partitura que você já tem e trabalhe em cima dela: marque com caneta e marca-texto, escreva, cole selos, apague, e baixe o PDF marcado. A IA também lê as notas e transforma em partitura editável.</p>
+        <button type="button" class="edit-drop" data-act="edit-load">
+          ${ICON.upload}
+          <strong>Carregar PDF ou foto</strong>
+          <span>Clique ou arraste o arquivo para cá · PDF, JPG, PNG</span>
+        </button>
+        <ul class="edit-tips">
+          <li>${ICON.pen}<span><b>Marcar</b> caneta, marca-texto, texto e selos</span></li>
+          <li>${ICON.move}<span><b>Mover</b> e corrigir marcações depois</span></li>
+          <li>${ICON.sparkle}<span><b>Ler com IA</b> vira partitura que toca</span></li>
+          <li>${ICON.download}<span><b>Baixar</b> o PDF com as marcações</span></li>
+        </ul>
+      </div>
+      <div class="edit-recent"></div>
+    </section>
     <section class="doc-view" hidden aria-label="Documento">
       <div class="doc-head">
         <div class="doc-name"></div>
         <div class="doc-actions">
           <button class="icon-btn" data-act="doc-analyze">${ICON.sparkle}<span>Ler e analisar com IA</span></button>
           <button class="icon-btn" data-act="doc-export">${ICON.download}<span>Baixar com marcações</span></button>
-          <button class="icon-btn" data-act="doc-close">Voltar à partitura</button>
+          <button class="icon-btn" data-act="doc-close" title="Fechar e voltar para a lista de documentos">Fechar documento</button>
         </div>
       </div>
       <div class="doc-pages"></div>
     </section>
+    <section class="perform" hidden aria-label="Tocar">
+      <div class="perform-bar" role="toolbar" aria-label="Controles do palco">
+        <div class="perform-info">
+          <div class="perform-title"></div>
+          <div class="perform-sub"></div>
+        </div>
+        <div class="perform-group setlist-nav" hidden>
+          <button class="icon-btn" data-act="stage-prev" title="Partitura anterior do evento ([)" aria-label="Partitura anterior">‹</button>
+          <button class="icon-btn" data-act="stage-next" title="Próxima partitura do evento (])" aria-label="Próxima partitura">›</button>
+        </div>
+        <div class="perform-group zoom" role="group" aria-label="Zoom">
+          <button class="icon-btn" data-act="zoom-out" title="Diminuir (−)" aria-label="Diminuir">${ICON.minus}</button>
+          <button class="zoom-value" data-act="zoom-fit" title="Ajustar à largura (0)">100%</button>
+          <button class="icon-btn" data-act="zoom-in" title="Aumentar (+)" aria-label="Aumentar">${ICON.plus}</button>
+        </div>
+        <div class="perform-group">
+          <button class="icon-btn" data-act="stage-open" title="Carregar partitura do aparelho: PDF, foto, MusicXML, MIDI (Ctrl+O)">${ICON.upload}<span>Carregar</span></button>
+          <button class="icon-btn" data-act="events" title="Eventos: repertórios salvos (E)">${ICON.list}<span>Eventos</span></button>
+          <button class="icon-btn wa" data-act="share-wa" title="Enviar o PDF pelo WhatsApp">${ICON.whatsapp}<span>WhatsApp</span></button>
+          <button class="icon-btn" data-act="stage-mine" hidden title="Voltar para a partitura que está em Escrever">${ICON.music}<span>Minha partitura</span></button>
+          <button class="icon-btn" data-act="stage-edit" hidden title="Abrir para editar (partitura em Escrever, PDF/foto em Editar)">${ICON.pen}<span>Editar</span></button>
+          <button class="icon-btn" data-act="feedback" title="Mandar uma sugestão" aria-label="Sugestão">${ICON.chat}</button>
+          <button class="icon-btn primary" data-act="immersive" title="Tela cheia: esconde tudo menos a partitura (F)">${ICON.expand}<span>Tela cheia</span></button>
+        </div>
+      </div>
+      <div class="perform-stage">
+        <div class="perform-wrap"><div class="perform-host score-host"></div></div>
+      </div>
+      <div class="perform-float" aria-label="Controles da tela cheia">
+        <button data-act="stage-prev" class="setlist-nav" title="Anterior ([)" aria-label="Anterior">‹</button>
+        <button data-act="zoom-out" title="Diminuir (−)" aria-label="Diminuir">${ICON.minus}</button>
+        <button class="zoom-value" data-act="zoom-fit" title="Ajustar à largura (0)">100%</button>
+        <button data-act="zoom-in" title="Aumentar (+)" aria-label="Aumentar">${ICON.plus}</button>
+        <button data-act="play" class="float-play" title="Ouvir (Espaço)" aria-label="Ouvir">${ICON.play}</button>
+        <button data-act="stage-next" class="setlist-nav" title="Próxima (])" aria-label="Próxima">›</button>
+        <button data-act="immersive" title="Sair da tela cheia (Esc)" aria-label="Sair da tela cheia">${ICON.collapse}</button>
+      </div>
+    </section>
   </main>
+  <aside class="events-panel" aria-label="Eventos" hidden></aside>
   <div class="annot-bar" role="toolbar" aria-label="Marcações" hidden></div>
   <div class="annot-pop" hidden></div>
 
@@ -181,6 +273,23 @@ app.innerHTML = `
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
+  <div class="overlay" data-overlay="library" hidden>
+    <div class="panel dialog library-panel" role="dialog" aria-modal="true" aria-labelledby="lib-h">
+      <div class="library-head">
+        <h2 id="lib-h">Minhas partituras</h2>
+        <button type="button" class="icon-btn primary" data-act="lib-new">${ICON.plus}<span>Nova</span></button>
+      </div>
+      <input class="library-search" type="search" placeholder="Buscar por título ou compositor" aria-label="Buscar partituras" />
+      <div class="library-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="feedback" hidden>
+    <div class="panel dialog feedback-panel" role="dialog" aria-modal="true" aria-label="Sugestão">
+      <h2>Sua sugestão</h2>
+      <div class="feedback-body"></div>
+    </div>
+  </div>
   <div class="overlay" data-overlay="confirm" hidden>
     <div class="panel dialog confirm-panel" role="alertdialog" aria-modal="true">
       <h2></h2>
@@ -193,6 +302,7 @@ app.innerHTML = `
   </div>
   <div class="toast"></div>
   <input type="file" accept=".sf2,.sf3" hidden data-soundfont />
+  <input type="file" multiple accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-stage-file />
   <input type="file" accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-file />
   <div class="drop-hint" hidden>Solte o arquivo para abrir</div>
 `;
@@ -224,12 +334,14 @@ function renderTheme(): RenderTheme {
 // ---------------------------------------------------------------- render
 
 function render() {
+  if (tab === 'perform') return renderPerform();
   const score = editor.score;
   if (document.activeElement !== titleInput) titleInput.value = score.title;
   if (document.activeElement !== composerInput) composerInput.value = score.composer;
   if (document.activeElement !== tempoInput) tempoInput.value = String(score.tempo);
 
   const width = scoreEl.clientWidth || 900;
+  if (scoreEl.clientWidth) layoutWidth = scoreEl.clientWidth;
   lastRender = renderScore(scoreEl, score, {
     width,
     selection: playing ? null : (() => {
@@ -314,18 +426,22 @@ function sound(pitches: { step: Step; alter: number; octave: number }[] | undefi
 }
 
 /** Passa volume e mudo de cada instrumento para o motor de som. */
-function syncMixer() {
-  for (const part of editor.score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
+function syncMixer(score: Score = editor.score) {
+  for (const part of score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
 }
 
 function togglePlay() {
   if (playing) return stopPlayback();
+  const stage = tab === 'perform';
+  const score = stage ? stageScore() : editor.score;
+  if (!score) return toast('PDF e foto não têm som. Para ouvir, carregue MusicXML ou MIDI, ou use “Ler com IA” em Editar.');
   const atEnd = editor.cursor >= editor.events().length;
-  const from = atEnd ? Fraction.ZERO : editor.cursorTime();
-  const { notes, steps, total } = schedule(editor.score, from);
+  const from = stage || atEnd ? Fraction.ZERO : editor.cursorTime();
+  const { notes, steps, total } = schedule(score, from);
   if (!notes.length) return toast('Nada para tocar ainda');
-  syncMixer();
-  const parts = editor.score.parts;
+  syncMixer(score);
+  playingStage = stage;
+  const parts = score.parts;
   const t0 = engine.now() + 0.08;
   for (const n of notes) {
     engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * n.gate, velocity: n.velocity });
@@ -354,7 +470,8 @@ function stopPlayback() {
 }
 
 function updatePlayButton() {
-  $('[data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Tocar</span>`;
+  $('.topbar [data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Ouvir</span>`;
+  app.querySelectorAll<HTMLElement>('.float-play').forEach((b) => (b.innerHTML = playing ? ICON.stop : ICON.play));
 }
 
 // ---------------------------------------------------------------- teclado
@@ -370,7 +487,27 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return openPalette();
   }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    return void openLibrary();
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
+    e.preventDefault();
+    return setTab(tab === 'perform' ? 'write' : 'perform');
+  }
   if (typing || anyOverlayOpen()) return;
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'e') {
+    e.preventDefault();
+    return setTab(tab === 'edit' ? 'write' : 'edit');
+  }
+  if (tab === 'perform') return onPerformKey(e, mod);
+  if (tab === 'edit' && !docView) {
+    if (mod && e.key.toLowerCase() === 'o') {
+      e.preventDefault();
+      $<HTMLInputElement>('[data-file]').click();
+    }
+    return;
+  }
   if (docView) return onDocKey(e, mod);
   if (e.key.toLowerCase() === 'm' && !mod && !e.altKey) {
     e.preventDefault();
@@ -474,7 +611,10 @@ function tuplet(n: number) {
 function commands(): Command[] {
   const list: Command[] = [
     { id: 'mode', label: editor.inputMode ? 'Sair do modo de escrita' : 'Entrar no modo de escrita', hint: 'N', run: () => editor.toggleInputMode() },
-    { id: 'play', label: playing ? 'Parar reprodução' : 'Tocar a partir do cursor', hint: 'Espaço', run: togglePlay },
+    { id: 'play', label: playing ? 'Parar reprodução' : 'Ouvir a partir do cursor', hint: 'Espaço', run: togglePlay },
+    { id: 'library', label: 'Minhas partituras: ver, abrir e apagar…', hint: 'Ctrl Shift O', run: () => void openLibrary() },
+    { id: 'tab-perform', label: tab === 'perform' ? 'Voltar para Escrever' : 'Tocar: partitura limpa e tela cheia', hint: 'Ctrl Shift P', run: () => setTab(tab === 'perform' ? 'write' : 'perform') },
+    { id: 'events', label: 'Eventos: salvar esta partitura num repertório', run: () => { setTab('perform'); void toggleEvents(true); } },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
     { id: 'save', label: 'Salvar arquivo (.wiss.json)', hint: 'Ctrl S', run: exportJson },
     { id: 'open', label: 'Abrir arquivo (MusicXML, MIDI, PDF, foto, .wiss.json)…', hint: 'Ctrl O', run: () => $<HTMLInputElement>('[data-file]').click() },
@@ -671,8 +811,27 @@ async function exportPdfFile() {
   }
 }
 
+type LoadedFile = { kind: 'score'; score: Score; warnings: string[] } | { kind: 'doc'; name: string; bytes: Uint8Array };
+
+/** Lê qualquer arquivo que o Music Wiss abre: partitura editável ou PDF/foto. */
+async function readAnyFile(file: File): Promise<LoadedFile> {
+  const name = file.name.toLowerCase();
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (name.endsWith('.json')) {
+    const data = JSON.parse(new TextDecoder().decode(bytes));
+    if (data?.format !== 'music-wiss' || !data.score?.parts) throw new Error('Este .json não é uma partitura do Music Wiss');
+    return { kind: 'score', score: migrateScore(data.score as Score), warnings: [] };
+  }
+  if (/\.midi?$/.test(name) || (bytes[0] === 0x4d && bytes[1] === 0x54 && bytes[2] === 0x68 && bytes[3] === 0x64)) {
+    return { kind: 'score', ...importMidi(bytes, file.name.replace(/\.midi?$/i, '')) };
+  }
+  if (isPdf(bytes) || imageType(bytes)) return { kind: 'doc', name: file.name, bytes };
+  return { kind: 'score', ...importMusicXml(readMusicXmlFile(name, bytes)) };
+}
+
 /** Abre .wiss.json, .musicxml, .xml ou .mxl. */
 async function openFile(file: File) {
+  if (tab === 'perform') return void loadOnStage([file]);
   stopPlayback();
   const name = file.name.toLowerCase();
   try {
@@ -725,7 +884,10 @@ function safeSet(key: string, value: string) {
 let saveTimer = 0;
 function autosave() {
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => safeSet(STORAGE_KEY, JSON.stringify(editor.score)), 400);
+  saveTimer = window.setTimeout(() => {
+    safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+    void saveToLibrary(editor.score);
+  }, 400);
 }
 
 function demoScore(): Score {
@@ -842,10 +1004,11 @@ app.addEventListener('click', (e) => {
     case 'annot-size': return annotResize(Number(el.dataset.f));
     case 'annot-delete': return annotDelete();
     case 'annot-done': return docView ? closeDocView() : toggleMarking(false);
-    case 'docs': closeMenu(); return void openRecentDocs();
+    case 'docs': closeMenu(); return setTab('edit');
     case 'doc-open': return void reopenDoc(el.dataset.id!);
     case 'doc-forget': return void forgetDoc(el.dataset.id!);
-    case 'doc-close': return closeDocView();
+    case 'doc-close': closeDocView(); return renderEditHome();
+    case 'edit-load': return $<HTMLInputElement>('[data-file]').click();
     case 'doc-show': return showDocView();
     case 'doc-export': return void exportDoc();
     case 'doc-analyze': return openAnalysis();
@@ -858,7 +1021,17 @@ app.addEventListener('click', (e) => {
     case 'export-pdf': closeMenu(); return void exportPdfFile();
     case 'export-xml': closeMenu(); return exportXml();
     case 'export-midi': closeMenu(); return exportMid();
+    case 'tab': return setTab(el.dataset.tab as Tab);
+    case 'library': closeMenu(); return void openLibrary();
+    case 'lib-open': return void libraryOpen(el.dataset.id!);
+    case 'lib-dup': return void libraryDuplicate(el.dataset.id!);
+    case 'lib-delete': return void libraryDelete(el.dataset.id!);
+    case 'lib-undo': return void libraryUndo();
+    case 'lib-new': closeOverlays(); return void openOverlay('new');
+    case 'lib-doc-delete': return void libraryDeleteDoc(el.dataset.id!);
+    case 'edit-doc-delete': return void editDeleteDoc(el.dataset.id!);
   }
+  onEventAct(el.dataset.act ?? '', el);
 });
 
 document.addEventListener('pointerdown', (e) => {
@@ -1363,6 +1536,7 @@ function setCloudDoc(doc: CloudDoc | null) {
 
 /** Abre uma partitura que não está na nuvem (arquivo, nova, exemplo). */
 function openLocal(score: Score) {
+  if (tab === 'edit') setTab('write');
   cloudDetach(false);
   closeDocView();
   editor.load(score);
@@ -1711,6 +1885,7 @@ async function initCloud() {
     cloudList = null;
     updateCloudChip();
     if (s) {
+      void flushFeedback();
       void refreshList();
       void openPendingLink();
       if (cloudDoc) void startLive();
@@ -2215,6 +2390,13 @@ async function openDoc(name: string, bytes: Uint8Array) {
 
 function showDocView(restore = false) {
   if (!doc) return;
+  if (tab !== 'edit') {
+    // a aba Editar mostra o documento aberto ao entrar
+    setTab('edit');
+    if (docView) return;
+  }
+  if (docStored) safeSet(OPEN_DOC_KEY, docStored.id);
+  editHomeEl.hidden = true;
   if (marking) marking = false;
   docView = true;
   annotHand = false;
@@ -2238,7 +2420,7 @@ function closeDocView() {
   docView = false;
   annotSelected = -1;
   docViewEl.hidden = true;
-  $('.sheet').hidden = false;
+  $('.sheet').hidden = tab !== 'write';
   app.classList.remove('doc-mode');
   docLayers = [];
   docPagesEl.innerHTML = '';
@@ -2556,3 +2738,841 @@ applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'lig
 void initCloud();
 if (annotPrefs.marking) toggleMarking(true);
 void resumeOpenDoc();
+
+// ---------------------------------------------------------------- aba Tocar (palco)
+
+const performEl = $<HTMLElement>('.perform');
+const stageEl = $<HTMLElement>('.perform-stage');
+const stageHost = $<HTMLElement>('.perform-host');
+const eventsEl = $<HTMLElement>('.events-panel');
+
+function loadZoom(): number | null {
+  try {
+    const z = Number(localStorage.getItem(ZOOM_KEY));
+    return z && Number.isFinite(z) ? z : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Item do evento (ou arquivo avulso) no palco; null = a partitura em edição. */
+function stageEntry(): EventItem | null {
+  return stageItem ? stageItem.event.items[stageItem.index] ?? null : null;
+}
+
+/** Partitura que está no palco agora (null quando é um PDF ou foto). */
+function stageScore(): Score | null {
+  const it = stageEntry();
+  return it ? it.score ?? null : editor.score;
+}
+
+function stageLayoutWidth(): number {
+  const it = stageEntry();
+  const w = it ? it.layoutWidth || 1018 : layoutWidth;
+  // sem marcações à mão, não precisa repetir a largura da edição: no celular a
+  // folha estreita demais aperta os compassos, então desenha mais larga e reduz
+  return stageScore()?.annotations?.length ? w : Math.max(640, w);
+}
+
+function setTab(next: Tab) {
+  if (next === tab) return;
+  stopPlayback();
+  // saindo da aba atual
+  if (tab === 'perform') {
+    exitImmersive();
+    stageItem = null;
+    if (eventsOpen) void toggleEvents(false);
+  }
+  if (tab === 'edit' && docView) closeDocView();
+  if (next !== 'write') {
+    if (marking) toggleMarking(false);
+    if (editor.inputMode) editor.toggleInputMode(false);
+    closeOverlays();
+  }
+  tab = next;
+  safeSet(TAB_KEY, tab);
+  app.classList.toggle('perform-mode', tab === 'perform');
+  app.classList.toggle('edit-mode', tab === 'edit');
+  performEl.hidden = tab !== 'perform';
+  $('.sheet').hidden = tab !== 'write';
+  editHomeEl.hidden = true;
+  app.querySelectorAll<HTMLElement>('[data-act="tab"]').forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  window.scrollTo(0, 0);
+  if (tab === 'perform') renderPerform();
+  else if (tab === 'edit') {
+    if (doc) showDocView(true);
+    else renderEditHome();
+  } else render();
+}
+
+const editHomeEl = $<HTMLElement>('.edit-home');
+
+/** Aba Editar sem documento aberto: carregar e documentos recentes. */
+async function renderEditHome() {
+  if (tab !== 'edit' || docView) return;
+  editHomeEl.hidden = false;
+  renderAnnotBar();
+  const box = editHomeEl.querySelector<HTMLElement>('.edit-recent')!;
+  const list = await listDocs();
+  if (tab !== 'edit' || docView) return;
+  box.innerHTML = list.length
+    ? `<h3 class="lib-h">Seus documentos <span>${list.length}</span></h3>
+       <ul class="lib-list">${list
+         .map(
+           (d) => `<li class="lib-row">
+             <button type="button" class="lib-main" data-act="doc-open" data-id="${d.id}" title="Abrir e continuar de onde parou">
+               <span class="lib-title">${escapeHtml(d.name)}</span><small>aberto ${when(d.updatedAt)}</small>
+             </button>
+             <button type="button" class="lib-icon danger" data-act="edit-doc-delete" data-id="${d.id}" title="Apagar" aria-label="Apagar ${escapeHtml(d.name)}">${ICON.trash}</button>
+           </li>`,
+         )
+         .join('')}</ul>`
+    : '<p class="sound-note">Os documentos que você abrir aqui ficam guardados neste navegador, com as marcações, para continuar depois.</p>';
+}
+
+/** Desenha a partitura do palco no tamanho da edição e só muda a escala (zoom). */
+function renderPerform() {
+  if (tab !== 'perform') return;
+  const entry = stageEntry();
+  const score = stageScore();
+  const w = stageLayoutWidth();
+  const avail = Math.max(240, stageEl.clientWidth - (immersive ? 16 : 32));
+  const fit = Math.min(3, avail / w);
+  const z = performZoom ?? fit;
+  const wrap = stageHost.parentElement!;
+  if (score) {
+    stageDocToken++;
+    wrap.classList.remove('is-doc');
+    const res = renderScore(stageHost, score, {
+      width: w,
+      selection: null,
+      playingTime: playing && playingStage ? playing.time : null,
+      cursor: null,
+      theme: { ...renderTheme(), accent: renderTheme().ink, warn: 'transparent' },
+    });
+    // marcações à mão, só para ver
+    const layer = new AnnotationLayer(stageHost, annotState, () => score.annotations ?? [], () => {}, async () => null);
+    layer.setActive(false);
+    stageHost.style.width = `${w}px`;
+    stageHost.style.transform = `scale(${z})`;
+    wrap.style.width = `${w * z}px`;
+    wrap.style.height = `${res.height * z}px`;
+  } else if (entry?.doc) {
+    wrap.classList.add('is-doc');
+    stageHost.style.transform = '';
+    stageHost.style.width = `${w * z}px`;
+    wrap.style.width = `${w * z}px`;
+    wrap.style.height = '';
+    void renderStageDoc(entry, w * z);
+  }
+  const title = entry ? entry.title : score?.title;
+  $('.perform-title').textContent = title || 'Sem título';
+  $('.perform-sub').innerHTML = stageItem
+    ? stageItem.event.id
+      ? `${escapeHtml(stageItem.event.name)} · ${stageItem.index + 1} de ${stageItem.event.items.length}`
+      : 'Arquivo aberto · para guardar, adicione a um evento'
+    : `${escapeHtml(score?.composer || 'Partitura em edição')}`;
+  app.querySelectorAll<HTMLElement>('.zoom-value').forEach((el) => (el.textContent = `${Math.round(z * 100)}%`));
+  app.querySelectorAll<HTMLButtonElement>('[data-act="zoom-fit"]').forEach((b) => b.classList.toggle('on', performZoom === null));
+  const many = !!stageItem && stageItem.event.items.length > 1;
+  const hasPrev = !!stageItem && stageItem.index > 0;
+  const hasNext = !!stageItem && stageItem.index < stageItem.event.items.length - 1;
+  app.querySelectorAll<HTMLButtonElement>('[data-act="stage-prev"]').forEach((b) => (b.disabled = !hasPrev));
+  app.querySelectorAll<HTMLButtonElement>('[data-act="stage-next"]').forEach((b) => (b.disabled = !hasNext));
+  app.querySelectorAll<HTMLElement>('.setlist-nav').forEach((el) => (el.hidden = !many));
+  $('[data-act="stage-edit"]').hidden = !stageItem;
+  $('[data-act="stage-mine"]').hidden = !stageItem;
+}
+
+let stageDoc: { key: string; doc: OpenDocument } | null = null;
+let stageDocToken = 0;
+
+/** PDF ou foto no palco: cada página num canvas na largura do zoom (nítido), com as marcações por cima. */
+async function renderStageDoc(entry: EventItem, cssWidth: number) {
+  const token = ++stageDocToken;
+  const d = entry.doc!;
+  try {
+    if (stageDoc?.key !== entry.scoreId) {
+      const opened = await openDocument(d.name, d.bytes);
+      if (token !== stageDocToken) return opened.destroy();
+      stageDoc?.doc.destroy();
+      stageDoc = { key: entry.scoreId, doc: opened };
+    }
+    if (!stageDoc) return;
+  } catch {
+    stageHost.innerHTML = '<p class="stage-error">Não consegui abrir este arquivo.</p>';
+    return;
+  }
+  const opened = stageDoc.doc;
+  const frag = document.createDocumentFragment();
+  const jobs: Array<Promise<void>> = [];
+  opened.pages.forEach((page, i) => {
+    const host = document.createElement('div');
+    host.className = 'perform-page';
+    host.style.width = `${cssWidth}px`;
+    host.style.height = `${(cssWidth * page.height) / page.width}px`;
+    const canvas = document.createElement('canvas');
+    host.appendChild(canvas);
+    frag.appendChild(host);
+    jobs.push(page.render(canvas, cssWidth).then(() => {
+      if (token !== stageDocToken) return;
+      const marks = d.marks?.[i] ?? [];
+      if (marks.length) new AnnotationLayer(host, annotState, () => marks, () => {}, async () => null).setActive(false);
+    }));
+  });
+  if (token !== stageDocToken) return;
+  stageHost.replaceChildren(frag);
+  await Promise.allSettled(jobs);
+}
+
+function zoomBy(dir: 1 | -1) {
+  const avail = Math.max(240, stageEl.clientWidth - 32);
+  const current = performZoom ?? avail / stageLayoutWidth();
+  const next = dir > 0 ? ZOOM_STEPS.find((s) => s > current + 0.001) : [...ZOOM_STEPS].reverse().find((s) => s < current - 0.001);
+  if (!next) return toast(dir > 0 ? 'Zoom máximo' : 'Zoom mínimo');
+  setZoom(next);
+}
+
+function setZoom(z: number | null) {
+  // mantém o mesmo ponto da música no meio da tela
+  const before = stageEl.scrollHeight;
+  const mid = window.scrollY + window.innerHeight / 2 - (stageEl.getBoundingClientRect().top + window.scrollY);
+  performZoom = z;
+  safeSet(ZOOM_KEY, z === null ? '' : String(z));
+  renderPerform();
+  const ratio = before ? mid / before : 0;
+  const top = stageEl.getBoundingClientRect().top + window.scrollY;
+  window.scrollTo(0, Math.max(0, top + ratio * stageEl.scrollHeight - window.innerHeight / 2));
+}
+
+/** Rola uma "página" (para pedais de virar página e setas). */
+function turnPage(dir: 1 | -1) {
+  const h = window.innerHeight - (immersive ? 40 : 120);
+  const atEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+  const atTop = window.scrollY <= 2;
+  if (dir > 0 && atEnd && stageItem) return stageGo(1);
+  if (dir < 0 && atTop && stageItem && stageItem.index > 0) return stageGo(-1, true);
+  window.scrollBy({ top: dir * h * 0.9, behavior: 'smooth' });
+}
+
+function stageGo(delta: 1 | -1, toEnd = false) {
+  if (!stageItem) return;
+  const i = stageItem.index + delta;
+  if (i < 0 || i >= stageItem.event.items.length) return;
+  stopPlayback();
+  stageItem = { ...stageItem, index: i };
+  renderPerform();
+  window.scrollTo(0, toEnd ? document.documentElement.scrollHeight : 0);
+  toast(`${i + 1} de ${stageItem.event.items.length}: ${stageItem.event.items[i].title}`);
+}
+
+// ---- tela cheia
+
+function enterImmersive() {
+  if (eventsOpen) void toggleEvents(false);
+  immersive = true;
+  app.classList.add('immersive');
+  const el = document.documentElement;
+  if (!document.fullscreenElement && el.requestFullscreen) {
+    el.requestFullscreen({ navigationUI: 'hide' }).catch(() => {
+      /* sem tela cheia do navegador (iPhone): fica o modo imersivo da página */
+    });
+  }
+  showFloat();
+  renderPerform();
+  toast('Tela cheia: toque ou mexa o mouse para ver os controles. Esc sai.');
+}
+
+function exitImmersive() {
+  if (!immersive) return;
+  immersive = false;
+  app.classList.remove('immersive');
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  renderPerform();
+}
+
+function toggleImmersive() {
+  return immersive ? exitImmersive() : enterImmersive();
+}
+
+document.addEventListener('fullscreenchange', () => {
+  // saiu pelo Esc do navegador
+  if (!document.fullscreenElement && immersive) exitImmersive();
+});
+
+function showFloat() {
+  if (!immersive) return;
+  app.classList.add('float-on');
+  clearTimeout(floatTimer);
+  floatTimer = window.setTimeout(() => app.classList.remove('float-on'), 2600);
+}
+['pointermove', 'pointerdown'].forEach((ev) => window.addEventListener(ev, () => immersive && showFloat(), { passive: true }));
+
+function onPerformKey(e: KeyboardEvent, mod: boolean) {
+  const k = e.key;
+  let handled = true;
+  if (k === ' ') togglePlay();
+  else if (k === 'PageDown' || k === 'ArrowDown' || k === 'ArrowRight') turnPage(1);
+  else if (k === 'PageUp' || k === 'ArrowUp' || k === 'ArrowLeft') turnPage(-1);
+  else if (k === 'Home') window.scrollTo(0, 0);
+  else if (k === 'End') window.scrollTo(0, document.documentElement.scrollHeight);
+  else if ((k === '+' || k === '=') && !e.altKey) zoomBy(1);
+  else if ((k === '-' || k === '_') && !e.altKey) zoomBy(-1);
+  else if (k === '0' && !mod) setZoom(null);
+  else if (k.toLowerCase() === 'f' && !mod) toggleImmersive();
+  else if (k === 'Escape') {
+    if (immersive) exitImmersive();
+    else if (eventsOpen) toggleEvents(false);
+    else handled = false;
+  } else if (k === ']') stageGo(1);
+  else if (k === '[') stageGo(-1);
+  else if (k.toLowerCase() === 'e' && !mod) toggleEvents();
+  else if (k.toLowerCase() === 'o' && mod) onEventAct('stage-open', document.body);
+  else handled = false;
+  if (handled) e.preventDefault();
+}
+
+// ctrl/⌘ + roda do mouse (ou pinça no trackpad) = zoom
+stageEl.addEventListener(
+  'wheel',
+  (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1 : -1);
+  },
+  { passive: false },
+);
+
+// ---- eventos (repertório)
+
+async function toggleEvents(on = !eventsOpen) {
+  eventsOpen = on;
+  app.classList.toggle('events-open', on);
+  eventsEl.hidden = !on;
+  renderPerform();
+  if (on) {
+    events = await listEvents();
+    if (!openEventId && events.length) openEventId = stageItem?.event.id ?? events[0].id;
+    renderEvents();
+  }
+}
+
+function renderEvents() {
+  const today = new Date().toISOString().slice(0, 10);
+  const cur = stageCandidate();
+  const row = (ev: PerformEvent) => {
+    const open = ev.id === openEventId;
+    const has = ev.items.some((i) => i.scoreId === cur.key);
+    const past = ev.date && ev.date < today;
+    return `<li class="event ${open ? 'open' : ''} ${past ? 'past' : ''}">
+      <button type="button" class="event-head" data-act="ev-toggle" data-id="${ev.id}" aria-expanded="${open}">
+        <span class="event-name">${escapeHtml(ev.name)}</span>
+        <small>${[formatEventDate(ev.date), ev.place && escapeHtml(ev.place), `${ev.items.length} ${ev.items.length === 1 ? 'partitura' : 'partituras'}`].filter(Boolean).join(' · ')}</small>
+      </button>
+      ${open ? `<div class="event-body">
+        ${ev.items.length ? `<ol class="setlist">${ev.items.map((it, i) => `<li class="${stageItem?.event.id === ev.id && stageItem.index === i ? 'current' : ''}">
+            <button type="button" class="setlist-open" data-act="ev-play" data-id="${ev.id}" data-i="${i}" title="Abrir no palco"><span class="n">${i + 1}</span><span class="t">${escapeHtml(it.title)}</span><span class="kind">${it.doc ? (isPdf(it.doc.bytes) ? 'PDF' : 'Foto') : 'Partitura'}</span></button>
+            <span class="setlist-tools">
+              <button type="button" data-act="ev-up" data-id="${ev.id}" data-item="${it.id}" title="Subir" ${i === 0 ? 'disabled' : ''} aria-label="Subir">↑</button>
+              <button type="button" data-act="ev-down" data-id="${ev.id}" data-item="${it.id}" title="Descer" ${i === ev.items.length - 1 ? 'disabled' : ''} aria-label="Descer">↓</button>
+              <button type="button" data-act="ev-remove" data-id="${ev.id}" data-item="${it.id}" title="Tirar do evento" aria-label="Tirar do evento">×</button>
+            </span></li>`).join('')}</ol>`
+          : '<p class="sound-note">Nenhuma partitura ainda. Carregue arquivos do aparelho ou adicione a que está aberta.</p>'}
+        <div class="cloud-actions">
+          <button type="button" class="icon-btn small primary" data-act="ev-load" data-id="${ev.id}" title="PDF, foto, MusicXML, MIDI ou .wiss.json (pode escolher vários)">${ICON.upload}<span>Carregar arquivos</span></button>
+          ${stageItem?.event.id === ev.id ? '' : `<button type="button" class="icon-btn small" data-act="ev-add" data-id="${ev.id}" title="${has ? 'Trocar a cópia do evento por esta versão' : 'Pôr no evento o que está no palco'}">${has ? 'Atualizar' : 'Adicionar'} “${escapeHtml(cur.title)}”</button>`}
+          ${ev.items.length ? `<button type="button" class="icon-btn small" data-act="ev-play" data-id="${ev.id}" data-i="0">${ICON.play}<span>Começar</span></button>` : ''}
+          <button type="button" class="link-btn danger" data-act="ev-delete" data-id="${ev.id}">Apagar evento</button>
+        </div>
+      </div>` : ''}
+    </li>`;
+  };
+  eventsEl.innerHTML = `
+    <div class="events-head">
+      <h2>Eventos</h2>
+      <button type="button" class="icon-btn small" data-act="events-close" aria-label="Fechar eventos">Fechar</button>
+    </div>
+    <p class="sound-note">Junte as partituras de cada apresentação, ensaio ou missa e abra com um toque. Ficam salvas neste aparelho e funcionam sem internet.</p>
+    ${creatingEvent ? `<form class="cloud-form event-form" data-form="event">
+        <label>Nome<input name="name" required maxlength="120" placeholder="ex.: Casamento Ana e Leo" /></label>
+        <div class="event-form-row">
+          <label>Data<input name="date" type="date" /></label>
+          <label>Local<input name="place" maxlength="120" placeholder="opcional" /></label>
+        </div>
+        <label class="check-row"><input type="checkbox" name="add" value="1" checked /> Já incluir “${escapeHtml(cur.title)}”</label>
+        <div class="cloud-actions"><button class="icon-btn primary" type="submit">Criar evento</button><button type="button" class="link-btn" data-act="ev-cancel">Cancelar</button></div>
+      </form>`
+      : `<button type="button" class="icon-btn new-event" data-act="ev-new">${ICON.plus}<span>Novo evento</span></button>`}
+    ${events.length ? `<ul class="events-list">${events.map(row).join('')}</ul>` : creatingEvent ? '' : '<p class="empty-events">Você ainda não tem eventos. Crie o primeiro e adicione a partitura aberta.</p>'}`;
+  if (creatingEvent) eventsEl.querySelector<HTMLInputElement>('[name="name"]')?.focus();
+}
+
+eventsEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(e.target as HTMLFormElement);
+  const ev = createEvent(String(data.get('name') ?? ''), String(data.get('date') ?? ''), String(data.get('place') ?? ''));
+  if (data.get('add')) stageCandidate().add(ev);
+  if (!(await saveEvent(ev))) return toast('Não consegui salvar neste navegador (modo anônimo?)');
+  creatingEvent = false;
+  openEventId = ev.id;
+  events = await listEvents();
+  renderEvents();
+  toast(ev.items.length ? `Evento criado com “${ev.items[0].title}”` : 'Evento criado. Agora carregue os arquivos do repertório.');
+});
+
+async function withEvent(id: string, fn: (ev: PerformEvent) => void | Promise<void>) {
+  const ev = events.find((x) => x.id === id);
+  if (!ev) return;
+  await fn(ev);
+  await saveEvent(ev);
+  events = await listEvents();
+  if (stageItem?.event.id === ev.id) {
+    const fresh = events.find((x) => x.id === ev.id);
+    if (!fresh || !fresh.items.length) stageItem = null;
+    else stageItem = { event: fresh, index: Math.min(stageItem.index, fresh.items.length - 1) };
+    renderPerform();
+  }
+  renderEvents();
+}
+
+function onEventAct(act: string, el: HTMLElement): boolean {
+  const id = el.dataset.id ?? '';
+  switch (act) {
+    case 'events': void toggleEvents(); return true;
+    case 'events-close': void toggleEvents(false); return true;
+    case 'ev-new': creatingEvent = true; renderEvents(); return true;
+    case 'ev-cancel': creatingEvent = false; renderEvents(); return true;
+    case 'ev-toggle': openEventId = openEventId === id ? null : id; renderEvents(); return true;
+    case 'ev-add':
+      void withEvent(id, (ev) => {
+        const isNew = stageCandidate().add(ev);
+        toast(isNew ? `Adicionada a “${ev.name}”` : 'Cópia no evento atualizada com a versão atual');
+      });
+      return true;
+    case 'ev-load':
+      loadTarget = id;
+      $<HTMLInputElement>('[data-stage-file]').click();
+      return true;
+    case 'stage-open':
+      loadTarget = null;
+      $<HTMLInputElement>('[data-stage-file]').click();
+      return true;
+    case 'stage-mine':
+      stopPlayback();
+      stageItem = null;
+      renderPerform();
+      if (eventsOpen) renderEvents();
+      return true;
+    case 'ev-up': void withEvent(id, (ev) => moveItem(ev, el.dataset.item!, -1)); return true;
+    case 'ev-down': void withEvent(id, (ev) => moveItem(ev, el.dataset.item!, 1)); return true;
+    case 'ev-remove': void withEvent(id, (ev) => removeItem(ev, el.dataset.item!)); return true;
+    case 'ev-delete':
+      void (async () => {
+        const ev = events.find((x) => x.id === id);
+        if (!ev) return;
+        const ok = await askConfirm('Apagar evento?', `O evento “${ev.name}” e a lista de ${ev.items.length} ${ev.items.length === 1 ? 'partitura' : 'partituras'} serão apagados deste aparelho. As partituras originais não são apagadas.`, 'Apagar evento');
+        if (!ok) return;
+        await deleteEvent(id);
+        if (stageItem?.event.id === id) stageItem = null;
+        events = await listEvents();
+        renderEvents();
+        renderPerform();
+        toast('Evento apagado');
+      })();
+      return true;
+    case 'ev-play': {
+      const ev = events.find((x) => x.id === id);
+      if (!ev?.items.length) return true;
+      stopPlayback();
+      stageItem = { event: ev, index: Number(el.dataset.i ?? 0) };
+      if (window.innerWidth < 900) void toggleEvents(false);
+      else renderEvents();
+      renderPerform();
+      window.scrollTo(0, 0);
+      return true;
+    }
+    case 'stage-prev': stageGo(-1); return true;
+    case 'stage-next': stageGo(1); return true;
+    case 'stage-edit': {
+      // leva a partitura do evento para a edição (substitui a atual)
+      if (!stageItem) return true;
+      const it = stageItem.event.items[stageItem.index];
+      if (it.doc) {
+        // PDF/foto: abre na aba Escrever, no visualizador com marcações
+        const d = it.doc;
+        stageItem = null;
+        setTab('edit');
+        void openDoc(d.name, d.bytes);
+        return true;
+      }
+      void (async () => {
+        const ok = await askConfirm('Editar esta partitura?', `“${it.title}” vai para a aba Escrever no lugar da partitura aberta agora. Salve a atual antes (Arquivo → Salvar ou na nuvem) se precisar dela.`, 'Abrir para editar');
+        if (!ok) return;
+        const copy = JSON.parse(JSON.stringify(it.score)) as Score;
+        stageItem = null;
+        openLocal(migrateScore(copy));
+        setTab('write');
+        toast('Depois de editar, use “Atualizar” no evento para guardar a versão nova');
+      })();
+      return true;
+    }
+    case 'zoom-in': zoomBy(1); return true;
+    case 'zoom-out': zoomBy(-1); return true;
+    case 'zoom-fit': setZoom(null); return true;
+    case 'immersive': toggleImmersive(); return true;
+    case 'share-wa': void shareWhatsApp(); return true;
+    case 'feedback': openFeedback(); return true;
+    case 'fb-send': void sendFeedbackNow(); return true;
+  }
+  return false;
+}
+
+// ---- carregar arquivos novos (do aparelho) no palco ou num evento
+
+/** Evento que vai receber os arquivos escolhidos (null = abrir avulso no palco). */
+let loadTarget: string | null = null;
+
+$<HTMLInputElement>('[data-stage-file]').addEventListener('change', (e) => {
+  const input = e.target as HTMLInputElement;
+  const files = [...(input.files ?? [])];
+  input.value = '';
+  if (!files.length) return;
+  if (loadTarget) void loadIntoEvent(loadTarget, files);
+  else void loadOnStage(files);
+});
+
+/** Converte arquivos em itens de evento. Os que não abrem são contados. */
+async function filesToItems(files: File[]): Promise<{ items: EventItem[]; failed: string[] }> {
+  const holder = createEvent('tmp');
+  const failed: string[] = [];
+  for (const f of files) {
+    try {
+      const r = await readAnyFile(f);
+      if (r.kind === 'score') {
+        if (!r.score.title || r.score.title === 'Sem título') r.score.title = f.name.replace(/\.[^.]+$/, '');
+        addScore(holder, r.score, Math.max(layoutWidth, 900));
+      } else {
+        const key = await docId(r.bytes);
+        // se o arquivo já foi marcado em Escrever, as marcações vêm junto
+        const stored = await loadDoc(key);
+        addDoc(holder, key, { name: r.name, bytes: r.bytes, marks: stored?.marks ?? {} });
+      }
+    } catch {
+      failed.push(f.name);
+    }
+  }
+  return { items: holder.items, failed };
+}
+
+/** Abre arquivos no palco sem salvar (vários viram uma lista que dá para passar com ‹ ›). */
+async function loadOnStage(files: File[]) {
+  toast('Abrindo…');
+  const { items, failed } = await filesToItems(files);
+  if (!items.length) return toast(failed.length ? `Não consegui abrir “${failed[0]}”` : 'Nada para abrir');
+  stopPlayback();
+  const loose: PerformEvent = { ...createEvent('Arquivos abertos'), id: '', items };
+  stageItem = { event: loose, index: 0 };
+  renderPerform();
+  if (eventsOpen) renderEvents();
+  window.scrollTo(0, 0);
+  toast(failed.length ? `Abri ${items.length}; não consegui abrir “${failed[0]}”` : 'Aberto. Para guardar, use Eventos → Adicionar.');
+}
+
+async function loadIntoEvent(id: string, files: File[]) {
+  toast('Carregando…');
+  const { items, failed } = await filesToItems(files);
+  if (!items.length) return toast(failed.length ? `Não consegui abrir “${failed[0]}”` : 'Nada para carregar');
+  let added = 0;
+  await withEvent(id, (ev) => {
+    for (const it of items) if (addItem(ev, it)) added++;
+  });
+  const updated = items.length - added;
+  toast(
+    `${added ? `${added} ${added === 1 ? 'arquivo adicionado' : 'arquivos adicionados'}` : ''}${added && updated ? ', ' : ''}${updated ? `${updated} ${updated === 1 ? 'atualizado' : 'atualizados'}` : ''}${failed.length ? `. Não abriu: ${failed.join(', ')}` : ''}`,
+  );
+}
+
+/** O que o botão “Adicionar” põe no evento: o arquivo do palco ou a partitura em edição. */
+function stageCandidate(): { key: string; title: string; add: (ev: PerformEvent) => boolean } {
+  const it = stageEntry();
+  if (it) return { key: it.scoreId, title: it.title, add: (ev) => addItem(ev, it) };
+  return { key: editor.score.id, title: editor.score.title || 'Sem título', add: (ev) => addScore(ev, editor.score, layoutWidth) };
+}
+
+// ---- compartilhar PDF pelo WhatsApp
+
+let sharing = false;
+async function shareWhatsApp() {
+  if (sharing) return;
+  sharing = true;
+  const score = stageScore();
+  const entry = stageEntry();
+  const title = entry?.title ?? score?.title ?? '';
+  toast('Preparando o PDF…');
+  try {
+    let pdf: Blob;
+    if (score) {
+      const { exportPdf } = await import('./io/pdf');
+      pdf = await exportPdf(score);
+    } else {
+      const d = entry!.doc!;
+      const marked = Object.values(d.marks ?? {}).some((l) => l.length);
+      if (isPdf(d.bytes) && !marked) pdf = new Blob([d.bytes as BlobPart], { type: 'application/pdf' });
+      else {
+        const opened = await openDocument(d.name, d.bytes);
+        pdf = await exportAnnotatedPdf(opened, d.marks ?? {});
+        opened.destroy();
+      }
+    }
+    // partitura na nuvem e sua: manda também o link para ver
+    let link: string | undefined;
+    if (!stageItem && cloudDoc?.role === 'owner' && session) {
+      link = await cloud.createShareLink(cloudDoc.id, 'view').catch(() => undefined);
+    }
+    const res = await sharePdfToWhatsApp(pdf, title, link, download);
+    if (res === 'shared') toast('Enviado');
+    else if (res === 'fallback') toast('PDF baixado. No WhatsApp que abriu, anexe o arquivo baixado (clipe 📎).');
+  } catch (err) {
+    console.error(err);
+    toast('Não foi possível preparar o PDF');
+  }
+  sharing = false;
+}
+
+// ---- sugestões (feedback)
+
+const FEEDBACK_QUEUE = 'music-wiss:feedback-queue';
+let fbRating: number | null = null;
+
+function openFeedback() {
+  fbRating = null;
+  const body = $('.feedback-body');
+  body.innerHTML = `
+    <p>Como está a aba Tocar? Sua opinião vai direto para quem faz o Music Wiss.</p>
+    <div class="rating" role="radiogroup" aria-label="Nota de 1 a 5">
+      ${[1, 2, 3, 4, 5].map((n) => `<button type="button" role="radio" aria-checked="false" data-act="fb-rate" data-n="${n}" aria-label="${n} de 5">★</button>`).join('')}
+    </div>
+    <label class="fb-label">O que podemos melhorar? (opcional)<textarea name="fb" rows="4" maxlength="2000" placeholder="ex.: queria virar a página com um pedal bluetooth"></textarea></label>
+    <p class="sound-note">${session ? 'Enviamos junto só a nota, o texto e a tela de onde veio (Tocar).' : 'Você não está conectado: a sugestão fica guardada aqui e é enviada quando você entrar na Nuvem.'}</p>
+    <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Cancelar</button><button type="button" class="icon-btn primary" data-act="fb-send">Enviar</button></div>`;
+  openOverlay('feedback');
+}
+
+$('.feedback-body').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>('[data-act="fb-rate"]');
+  if (!b) return;
+  fbRating = Number(b.dataset.n);
+  $('.feedback-body').querySelectorAll<HTMLElement>('[data-act="fb-rate"]').forEach((x) => {
+    const on = Number(x.dataset.n) <= fbRating!;
+    x.classList.toggle('on', on);
+    x.setAttribute('aria-checked', String(Number(x.dataset.n) === fbRating));
+  });
+});
+
+function feedbackQueue(): FeedbackInput[] {
+  try {
+    return JSON.parse(localStorage.getItem(FEEDBACK_QUEUE) ?? '[]') as FeedbackInput[];
+  } catch {
+    return [];
+  }
+}
+
+async function sendFeedbackNow() {
+  const message = $('.feedback-body').querySelector<HTMLTextAreaElement>('[name="fb"]')!.value.trim();
+  if (!fbRating && !message) return toast('Escolha uma nota ou escreva uma sugestão');
+  const item: FeedbackInput = { rating: fbRating, message, context: 'tocar' };
+  closeOverlays();
+  if (session) {
+    try {
+      await cloud.sendFeedback(item, APP_VERSION);
+      return toast('Obrigado! Sugestão enviada 💛');
+    } catch {
+      /* sem rede ou sem a tabela: guarda para depois */
+    }
+  }
+  safeSet(FEEDBACK_QUEUE, JSON.stringify([...feedbackQueue(), item].slice(-20)));
+  toast('Obrigado! Guardamos sua sugestão e enviamos quando você estiver conectado.');
+}
+
+/** Envia as sugestões guardadas (chamado quando a pessoa entra na conta). */
+async function flushFeedback() {
+  const q = feedbackQueue();
+  if (!q.length || !session) return;
+  const left: FeedbackInput[] = [];
+  for (const item of q) {
+    try {
+      await cloud.sendFeedback(item, APP_VERSION);
+    } catch {
+      left.push(item);
+    }
+  }
+  safeSet(FEEDBACK_QUEUE, JSON.stringify(left));
+}
+
+window.addEventListener('resize', () => tab === 'perform' && renderPerform());
+
+
+{
+  const saved = localStorage.getItem(TAB_KEY);
+  if (saved === 'perform' || saved === 'edit') setTab(saved);
+}
+
+// ---------------------------------------------------------------- minhas partituras
+
+let libraryList: LibraryEntry[] = [];
+let libraryDocs: Array<{ id: string; name: string; updatedAt: number }> = [];
+/** Última partitura apagada, para desfazer. */
+let libraryTrash: LibraryEntry | null = null;
+const libraryBody = $<HTMLElement>('.library-body');
+const librarySearch = $<HTMLInputElement>('.library-search');
+
+async function openLibrary() {
+  if (tab === 'perform') setTab('write');
+  openOverlay('library');
+  librarySearch.value = '';
+  // garante que a partitura aberta agora aparece na lista
+  clearTimeout(saveTimer);
+  safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  await saveToLibrary(editor.score);
+  libraryBody.innerHTML = '<p class="sound-note">Carregando…</p>';
+  [libraryList, libraryDocs] = await Promise.all([listLibrary(), listDocs()]);
+  renderLibrary();
+  librarySearch.focus();
+}
+
+librarySearch.addEventListener('input', () => renderLibrary());
+
+function when(t: number): string {
+  const d = new Date(t);
+  const today = new Date();
+  const same = d.toDateString() === today.toDateString();
+  return same ? `hoje, ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+
+function renderLibrary() {
+  const q = librarySearch.value;
+  const list = filterLibrary(libraryList, q);
+  const docs = libraryDocs.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const undo = libraryTrash
+    ? `<div class="lib-undo" role="status">“${escapeHtml(libraryTrash.title)}” foi apagada. <button type="button" class="link-btn" data-act="lib-undo">Desfazer</button></div>`
+    : '';
+  const rows = list
+    .map((e) => {
+      const current = e.id === editor.score.id;
+      return `<li class="lib-row ${current ? 'current' : ''}">
+        <button type="button" class="lib-main" data-act="lib-open" data-id="${e.id}" title="${current ? 'Esta é a partitura aberta' : 'Abrir'}">
+          <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}</span>
+          <small>${[e.composer && escapeHtml(e.composer), escapeHtml(e.summary), `editada ${when(e.updatedAt)}`].filter(Boolean).join(' · ')}</small>
+        </button>
+        <button type="button" class="lib-icon" data-act="lib-dup" data-id="${e.id}" title="Fazer uma cópia" aria-label="Fazer uma cópia de ${escapeHtml(e.title)}">${ICON.copy}</button>
+        <button type="button" class="lib-icon danger" data-act="lib-delete" data-id="${e.id}" title="Apagar" aria-label="Apagar ${escapeHtml(e.title)}">${ICON.trash}</button>
+      </li>`;
+    })
+    .join('');
+  const docRows = docs
+    .map(
+      (d) => `<li class="lib-row ${docStored?.id === d.id && docView ? 'current' : ''}">
+        <button type="button" class="lib-main" data-act="doc-open" data-id="${d.id}" title="Abrir com as marcações">
+          <span class="lib-title">${escapeHtml(d.name)}</span><small>PDF ou foto · aberto ${when(d.updatedAt)}</small>
+        </button>
+        <button type="button" class="lib-icon danger" data-act="lib-doc-delete" data-id="${d.id}" title="Apagar" aria-label="Apagar ${escapeHtml(d.name)}">${ICON.trash}</button>
+      </li>`,
+    )
+    .join('');
+  libraryBody.innerHTML = `${undo}
+    <p class="sound-note">Ficam guardadas neste navegador e são salvas sozinhas enquanto você escreve.${session ? ' As da sua conta estão em Nuvem.' : ''}</p>
+    ${list.length ? `<h3 class="lib-h">Partituras <span>${list.length}</span></h3><ul class="lib-list">${rows}</ul>` : `<p class="empty-events">${q.trim() ? 'Nenhuma partitura com esse nome.' : 'Nenhuma partitura ainda. Crie uma com Nova.'}</p>`}
+    ${docs.length ? `<h3 class="lib-h">PDFs e fotos <span>${docs.length}</span></h3><ul class="lib-list">${docRows}</ul>` : ''}`;
+}
+
+async function libraryOpen(id: string) {
+  if (id === editor.score.id) return closeOverlays();
+  const e = await getEntry(id);
+  if (!e) return toast('Não encontrei esta partitura');
+  closeOverlays();
+  stopPlayback();
+  openLocal(migrateScore(e.score));
+  clearTimeout(saveTimer);
+  safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  toast(`“${e.title}” aberta`);
+}
+
+async function libraryDuplicate(id: string) {
+  const e = await getEntry(id);
+  if (!e) return;
+  const copy = JSON.parse(JSON.stringify(e.score)) as Score;
+  copy.id = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  copy.title = `${e.title} (cópia)`;
+  await putEntry(toEntry(copy));
+  libraryList = await listLibrary();
+  renderLibrary();
+  toast('Cópia criada');
+}
+
+async function libraryDelete(id: string) {
+  const e = libraryList.find((x) => x.id === id) ?? (await getEntry(id));
+  if (!e) return;
+  const current = id === editor.score.id;
+  const ok = await askConfirm(
+    'Apagar partitura?',
+    `“${e.title}” será apagada deste navegador${current ? ' e fechada' : ''}.${cloudDoc && current ? ' A cópia na Nuvem continua lá (apague em Nuvem, se quiser).' : ''} Você ainda pode desfazer logo em seguida.`,
+    'Apagar',
+  );
+  if (!ok) return void openLibrary();
+  await deleteFromLibrary(id);
+  libraryTrash = e;
+  if (current) {
+    clearTimeout(saveTimer);
+    const next = (await listLibrary())[0];
+    stopPlayback();
+    openLocal(next ? migrateScore(next.score) : createScore());
+    safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  }
+  openOverlay('library');
+  [libraryList, libraryDocs] = await Promise.all([listLibrary(), listDocs()]);
+  renderLibrary();
+  toast(current ? `Apagada. Abrimos ${libraryList.length ? `“${editor.score.title}”` : 'uma partitura nova'}.` : 'Partitura apagada');
+}
+
+async function libraryUndo() {
+  if (!libraryTrash) return;
+  await putEntry(libraryTrash);
+  toast(`“${libraryTrash.title}” voltou`);
+  libraryTrash = null;
+  libraryList = await listLibrary();
+  renderLibrary();
+}
+
+async function libraryDeleteDoc(id: string) {
+  const d = libraryDocs.find((x) => x.id === id);
+  if (!d) return;
+  const ok = await askConfirm('Apagar documento?', `“${d.name}” e todas as marcações feitas nele serão apagados deste navegador. O arquivo original no seu aparelho não muda.`, 'Apagar');
+  if (ok) await forgetDoc(id);
+  openOverlay('library');
+  libraryDocs = await listDocs();
+  renderLibrary();
+}
+
+void saveToLibrary(editor.score);
+
+// não perde a última mudança se a página fechar antes do salvamento automático
+window.addEventListener('pagehide', () => safeSet(STORAGE_KEY, JSON.stringify(editor.score)));
+
+async function editDeleteDoc(id: string) {
+  const d = (await listDocs()).find((x) => x.id === id);
+  if (!d) return;
+  const ok = await askConfirm('Apagar documento?', `“${d.name}” e todas as marcações feitas nele serão apagados deste navegador. O arquivo original no seu aparelho não muda.`, 'Apagar');
+  if (!ok) return;
+  await deleteDoc(id);
+  if (docStored?.id === id) {
+    doc?.destroy();
+    doc = null;
+    docStored = null;
+  }
+  void renderEditHome();
+  toast('Documento apagado');
+}

@@ -566,7 +566,7 @@ export class Editor {
       return { ...e, id: newId('c'), notes: cloneNotes(e.notes).map((n) => ({ ...n, id: newId('n') })), tuplet, auto: undefined };
     });
     events.splice(this.cursor, 0, ...items);
-    this.anchor = this.cursor;
+    this.anchor = null; // colar de novo acrescenta outra cópia logo depois
     this.cursor += items.length;
     this.commit(events);
     return items.length;

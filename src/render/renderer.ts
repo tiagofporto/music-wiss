@@ -47,6 +47,8 @@ export interface RenderOptions {
   playingTime: number | null;
   cursor: { pos: Position; index: number } | null;
   theme: RenderTheme;
+  /** Desenha num canvas (para o PDF) em vez de SVG, com esta escala de pixels. */
+  canvas?: { element: HTMLCanvasElement; scale: number };
 }
 
 export interface CursorBox {
@@ -69,6 +71,8 @@ export interface RenderResult {
   cursor: CursorBox | null;
   /** caixas de clique por evento lógico */
   hits: Hit[];
+  /** faixa vertical de cada sistema (linha de pautas), para paginar */
+  systems: Array<{ top: number; bottom: number }>;
 }
 
 const STAFF_GAP = 82; // distância entre pautas do mesmo instrumento
@@ -270,7 +274,7 @@ function decorate(stave: Stave, score: Score, mi: number, firstInLine: boolean, 
 }
 
 export function renderScore(container: HTMLElement, score: Score, opts: RenderOptions): RenderResult {
-  container.innerHTML = '';
+  if (!opts.canvas) container.innerHTML = '';
   const { theme } = opts;
   const refs: StaffRef[] = allStaves(score).map(({ staff, partIndex, staffIndex }) => ({ staff, partIndex, staffIndex }));
   const measureCount = refs[0].staff.measures.length;
@@ -320,9 +324,12 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
   const systemHeight = off + 40 + SYSTEM_EXTRA + 40;
 
   const height = TOP + systems.length * systemHeight + 10;
-  const renderer = new Renderer(container as HTMLDivElement, Renderer.Backends.SVG);
+  const renderer = opts.canvas
+    ? new Renderer(opts.canvas.element, Renderer.Backends.CANVAS)
+    : new Renderer(container as HTMLDivElement, Renderer.Backends.SVG);
   renderer.resize(opts.width, height);
   const ctx = renderer.getContext();
+  if (opts.canvas) (ctx as unknown as { resize(w: number, h: number, dpr: number): void }).resize(opts.width, height, opts.canvas.scale);
   ctx.setFillStyle(theme.ink);
   ctx.setStrokeStyle(theme.ink);
 
@@ -470,7 +477,11 @@ export function renderScore(container: HTMLElement, score: Score, opts: RenderOp
 
   for (const list of drawn.values()) drawTies(ctx, list, theme);
 
-  return { height, cursor: opts.cursor ? cursorBox(opts.cursor, refs, drawn, staveAt, posKey) : null, hits };
+  const systemBounds = systems.map((_, si) => {
+    const top = TOP + si * systemHeight;
+    return { top: Math.max(0, top - 10), bottom: Math.min(height, top + systemHeight - SYSTEM_EXTRA + 30) };
+  });
+  return { height, cursor: opts.cursor ? cursorBox(opts.cursor, refs, drawn, staveAt, posKey) : null, hits, systems: systemBounds };
 }
 
 function groupByPart(refs: StaffRef[]): number[][] {

@@ -58,5 +58,6 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Espaço', 'Toca / para'],
   ['Ctrl + Z / Ctrl + Y', 'Desfaz / refaz'],
   ['Ctrl + K', 'Paleta de comandos'],
+  ['Ctrl + O / Ctrl + S', 'Abre (MusicXML, .mxl, .wiss.json) / salva'],
   ['?', 'Esta lista'],
 ];

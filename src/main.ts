@@ -16,6 +16,9 @@ import type { RenderResult, RenderTheme } from './render/renderer';
 import type { Command } from './ui/commands';
 import { DURATION_GLYPH, DURATION_KEYS, GLYPH, SHORTCUTS } from './ui/commands';
 import { ICON } from './ui/icons';
+import { exportMusicXml } from './io/musicxml-export';
+import { importMusicXml, readMusicXmlFile } from './io/musicxml-import';
+import { exportMidi } from './io/midi';
 
 const STORAGE_KEY = 'music-wiss:score';
 const THEME_KEY = 'music-wiss:theme';
@@ -36,6 +39,17 @@ app.innerHTML = `
     <div class="spacer"></div>
     <button class="icon-btn" data-act="palette" title="Paleta de comandos (Ctrl+K)">${ICON.search}<span>Comandos</span><span class="kbd">Ctrl K</span></button>
     <button class="icon-btn" data-act="new" title="Nova partitura">${ICON.plus}<span>Nova</span></button>
+    <div class="menu">
+      <button class="icon-btn" data-act="file-menu" aria-haspopup="true" title="Abrir e exportar">${ICON.download}<span>Arquivo</span></button>
+      <div class="menu-list" hidden>
+        <button data-act="open">${ICON.upload}<span>Abrir…</span><small>MusicXML, .mxl, .wiss.json</small></button>
+        <button data-act="save">${ICON.download}<span>Salvar</span><small>.wiss.json · Ctrl S</small></button>
+        <hr />
+        <button data-act="export-pdf"><span class="fmt">PDF</span><span>Exportar PDF</span><small>para imprimir</small></button>
+        <button data-act="export-xml"><span class="fmt">XML</span><span>Exportar MusicXML</span><small>abre em outros programas</small></button>
+        <button data-act="export-midi"><span class="fmt">MID</span><span>Exportar MIDI</span><small>sequenciadores e DAWs</small></button>
+      </div>
+    </div>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
     <button class="icon-btn primary" data-act="play" title="Tocar (Espaço)"></button>
   </header>
@@ -93,7 +107,8 @@ app.innerHTML = `
     </div>
   </div>
   <div class="toast"></div>
-  <input type="file" accept=".json,application/json" hidden data-file />
+  <input type="file" accept=".json,.musicxml,.xml,.mxl,application/json,application/xml" hidden data-file />
+  <div class="drop-hint" hidden>Solte o arquivo para abrir</div>
 `;
 
 const $ = <T extends HTMLElement>(sel: string) => app.querySelector<T>(sel)!;
@@ -267,6 +282,10 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return exportJson();
   }
+  if (mod && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    return $<HTMLInputElement>('[data-file]').click();
+  }
   if (mod && e.key.toLowerCase() === 'a') {
     e.preventDefault();
     return editor.selectAll();
@@ -340,8 +359,11 @@ function commands(): Command[] {
     { id: 'mode', label: editor.inputMode ? 'Sair do modo de escrita' : 'Entrar no modo de escrita', hint: 'N', run: () => editor.toggleInputMode() },
     { id: 'play', label: playing ? 'Parar reprodução' : 'Tocar a partir do cursor', hint: 'Espaço', run: togglePlay },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
-    { id: 'save', label: 'Salvar arquivo (.json)', hint: 'Ctrl S', run: exportJson },
-    { id: 'open', label: 'Abrir arquivo (.json)…', run: () => $<HTMLInputElement>('[data-file]').click() },
+    { id: 'save', label: 'Salvar arquivo (.wiss.json)', hint: 'Ctrl S', run: exportJson },
+    { id: 'open', label: 'Abrir arquivo (MusicXML, .mxl, .wiss.json)…', hint: 'Ctrl O', run: () => $<HTMLInputElement>('[data-file]').click() },
+    { id: 'export-pdf', label: 'Exportar PDF', run: () => void exportPdfFile() },
+    { id: 'export-xml', label: 'Exportar MusicXML', run: exportXml },
+    { id: 'export-midi', label: 'Exportar MIDI', run: exportMid },
     { id: 'theme', label: 'Alternar tema claro/escuro', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
     { id: 'help', label: 'Ver atalhos de teclado', hint: '?', run: () => openOverlay('help') },
     { id: 'undo', label: 'Desfazer', hint: 'Ctrl Z', run: () => editor.undo() },
@@ -445,24 +467,97 @@ function toast(msg: string) {
 
 // ---------------------------------------------------------------- arquivos
 
-function exportJson() {
-  const blob = new Blob([JSON.stringify({ format: 'music-wiss', version: 1, score: editor.score }, null, 2)], { type: 'application/json' });
+function fileBase(): string {
+  return editor.score.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'partitura';
+}
+
+/**
+ * Quando a página roda dentro do visualizador do claude.ai, downloads passam
+ * pela capacidade "downloads" (o usuário confirma). Fora dele, link normal.
+ */
+interface DownloadsApi {
+  save(req: { filename: string; data: Blob | Uint8Array }): Promise<unknown>;
+}
+let downloadsApi: DownloadsApi | null = null;
+const hostClaude = (window as unknown as { claude?: { use(name: string): Promise<unknown> } }).claude;
+hostClaude?.use('downloads').then((d) => (downloadsApi = d as DownloadsApi | null)).catch(() => undefined);
+const HOST_EXTENSIONS = new Set(['pdf', 'json', 'zip', 'txt']);
+
+/** Entrega um arquivo ao usuário (download no navegador). */
+async function download(name: string, blob: Blob) {
+  if (downloadsApi) {
+    let filename = name;
+    let data: Blob | Uint8Array = blob;
+    const ext = name.split('.').pop()!.toLowerCase();
+    if (!HOST_EXTENSIONS.has(ext)) {
+      // o visualizador só aceita alguns formatos: .musicxml e .mid vão dentro de um .zip
+      const { zipSync } = await import('fflate');
+      data = zipSync({ [name]: new Uint8Array(await blob.arrayBuffer()) });
+      filename = `${name}.zip`;
+    }
+    try {
+      await downloadsApi.save({ filename, data });
+    } catch (err) {
+      if ((err as { code?: string }).code !== 'declined') toast('Não foi possível salvar o arquivo aqui');
+    }
+    return;
+  }
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${editor.score.title.replace(/[^\p{L}\p{N} _-]/gu, '').trim() || 'partitura'}.wiss.json`;
+  a.download = name;
+  document.body.appendChild(a);
   a.click();
-  URL.revokeObjectURL(a.href);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+function exportJson() {
+  const blob = new Blob([JSON.stringify({ format: 'music-wiss', version: 1, score: editor.score }, null, 2)], { type: 'application/json' });
+  download(`${fileBase()}.wiss.json`, blob);
   toast('Arquivo salvo');
 }
 
-async function importJson(file: File) {
+function exportXml() {
+  download(`${fileBase()}.musicxml`, new Blob([exportMusicXml(editor.score)], { type: 'application/vnd.recordare.musicxml+xml' }));
+  toast('MusicXML exportado');
+}
+
+function exportMid() {
+  download(`${fileBase()}.mid`, new Blob([exportMidi(editor.score)], { type: 'audio/midi' }));
+  toast('MIDI exportado');
+}
+
+async function exportPdfFile() {
+  toast('Gerando PDF…');
   try {
-    const data = JSON.parse(await file.text());
-    if (data?.format !== 'music-wiss' || !data.score?.parts) throw new Error();
-    editor.load(migrateScore(data.score as Score));
-    toast('Partitura aberta');
-  } catch {
-    toast('Arquivo inválido');
+    const { exportPdf } = await import('./io/pdf');
+    download(`${fileBase()}.pdf`, await exportPdf(editor.score));
+    toast('PDF exportado');
+  } catch (err) {
+    console.error(err);
+    toast('Não foi possível gerar o PDF');
+  }
+}
+
+/** Abre .wiss.json, .musicxml, .xml ou .mxl. */
+async function openFile(file: File) {
+  stopPlayback();
+  const name = file.name.toLowerCase();
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    if (name.endsWith('.json')) {
+      const data = JSON.parse(new TextDecoder().decode(bytes));
+      if (data?.format !== 'music-wiss' || !data.score?.parts) throw new Error('Este .json não é uma partitura do Music Wiss');
+      editor.load(migrateScore(data.score as Score));
+      toast('Partitura aberta');
+      return;
+    }
+    const { score, warnings } = importMusicXml(readMusicXmlFile(name, bytes));
+    editor.load(score);
+    toast(warnings.length ? `Partitura aberta. ${warnings[0]}` : 'Partitura aberta');
+    if (warnings.length) console.info('Avisos da importação:', warnings);
+  } catch (err) {
+    toast(err instanceof Error && err.message ? err.message : 'Arquivo inválido');
   }
 }
 
@@ -556,6 +651,12 @@ app.addEventListener('click', (e) => {
     case 'natural': return editor.setAlter(0);
     case 'tie': return editor.toggleTie();
     case 'tuplet': return tuplet(3);
+    case 'file-menu': return toggleMenu();
+    case 'open': closeMenu(); return $<HTMLInputElement>('[data-file]').click();
+    case 'save': closeMenu(); return exportJson();
+    case 'export-pdf': closeMenu(); return void exportPdfFile();
+    case 'export-xml': closeMenu(); return exportXml();
+    case 'export-midi': closeMenu(); return exportMid();
   }
 });
 
@@ -610,7 +711,7 @@ $<HTMLFormElement>('[data-overlay="new"] form').addEventListener('submit', (e) =
 
 $<HTMLInputElement>('[data-file]').addEventListener('change', (e) => {
   const file = (e.target as HTMLInputElement).files?.[0];
-  if (file) void importJson(file);
+  if (file) void openFile(file);
   (e.target as HTMLInputElement).value = '';
 });
 
@@ -634,6 +735,35 @@ scoreEl.addEventListener('mousedown', (e) => {
   const hit = lastRender.hits.find((h) => x >= h.x && x <= h.x + h.w && y >= h.y && y <= h.y + h.h);
   if (hit) editor.clickEvent(hit.pos, hit.index, e.shiftKey);
   else editor.clearSelection();
+});
+
+// menu Arquivo
+const menuList = $<HTMLElement>('.menu-list');
+function toggleMenu() {
+  menuList.hidden = !menuList.hidden;
+}
+function closeMenu() {
+  menuList.hidden = true;
+}
+document.addEventListener('mousedown', (e) => {
+  if (!(e.target as HTMLElement).closest('.menu')) closeMenu();
+});
+
+// arrastar e soltar arquivos na janela
+const dropHint = $<HTMLElement>('.drop-hint');
+window.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer?.types.includes('Files')) return;
+  e.preventDefault();
+  dropHint.hidden = false;
+});
+window.addEventListener('dragleave', (e) => {
+  if (e.relatedTarget === null) dropHint.hidden = true;
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropHint.hidden = true;
+  const file = e.dataTransfer?.files[0];
+  if (file) void openFile(file);
 });
 
 // ---------------------------------------------------------------- início

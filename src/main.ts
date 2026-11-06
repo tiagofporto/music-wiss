@@ -61,7 +61,7 @@ let playingStage = false;
 const APP_VERSION = '0.1.0';
 
 // aba Tocar
-type Tab = 'write' | 'edit' | 'perform';
+type Tab = 'home' | 'write' | 'edit' | 'perform';
 const TAB_KEY = 'music-wiss:tab';
 const ZOOM_KEY = 'music-wiss:perform-zoom';
 const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2, 2.5, 3];
@@ -84,8 +84,8 @@ let creatingEvent = false;
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
-    <div class="brand"><img src="/favicon.svg" alt="" /><span>Music Wiss</span></div>
-    <div class="tabs" role="tablist" aria-label="Modo">
+    <button type="button" class="brand" data-act="home" title="Início" aria-label="Music Wiss: ir para o início"><img src="/favicon.svg" alt="" width="30" height="30" /><span translate="no">Music Wiss</span></button>
+    <div class="tabs" role="tablist" aria-label="Modo"><span class="tab-ink" aria-hidden="true"></span>
       <button class="tab on" role="tab" aria-selected="true" data-act="tab" data-tab="write" title="Escrever e editar a partitura">${ICON.pen}<span>Escrever</span></button>
       <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="edit" title="Editar PDF e fotos: marcar, selos, ler com IA (Ctrl+Shift+E)">${ICON.doc}<span>Editar</span></button>
       <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="perform" title="Tocar: partitura limpa, tela cheia e eventos (Ctrl+Shift+P)">${ICON.music}<span>Tocar</span></button>
@@ -116,6 +116,41 @@ app.innerHTML = `
   </header>
 
   <main class="stage">
+    <section class="home" hidden aria-labelledby="home-hello">
+      <div class="home-hero">
+        <svg class="home-staff" viewBox="0 0 1200 220" preserveAspectRatio="none" aria-hidden="true">
+          ${[0, 1, 2, 3, 4].map((i) => `<path d="M0 ${70 + i * 18} C 300 ${50 + i * 18}, 600 ${110 + i * 18}, 1200 ${60 + i * 18}" style="--d:${i * 90}ms" />`).join('')}
+        </svg>
+        <div class="home-notes" aria-hidden="true">${['♩', '♪', '♫', '♬', '♪', '♩', '♫'].map((n, i) => `<span style="--i:${i}">${n}</span>`).join('')}</div>
+        <div class="home-copy">
+          <p class="home-eyebrow"></p>
+          <h1 id="home-hello"></h1>
+          <p class="home-lead">O que vamos fazer hoje?</p>
+        </div>
+        <div class="home-preview" aria-hidden="true"><div class="home-preview-sheet"><div class="home-preview-host"></div></div></div>
+      </div>
+      <div class="home-modes" role="list">
+        <button type="button" role="listitem" class="home-mode m-write" data-act="tab" data-tab="write">
+          <span class="home-mode-art">${ICON.pen}</span>
+          <strong>Escrever</strong>
+          <span>Crie e edite partituras nota por nota, com som, cifras e letra.</span>
+          <small>Ctrl + Shift + O abre suas partituras</small>
+        </button>
+        <button type="button" role="listitem" class="home-mode m-edit" data-act="tab" data-tab="edit">
+          <span class="home-mode-art">${ICON.doc}</span>
+          <strong>Editar</strong>
+          <span>Carregue um PDF ou foto e marque por cima. A IA lê as notas.</span>
+          <small>Ctrl + Shift + E</small>
+        </button>
+        <button type="button" role="listitem" class="home-mode m-perform" data-act="tab" data-tab="perform">
+          <span class="home-mode-art">${ICON.music}</span>
+          <strong>Tocar</strong>
+          <span>Tela cheia, zoom e os repertórios dos seus eventos.</span>
+          <small>Ctrl + Shift + P</small>
+        </button>
+      </div>
+      <div class="home-shelf"></div>
+    </section>
     <article class="sheet">
       <div class="sheet-head">
         <input class="sheet-title" data-field="title" spellcheck="false" aria-label="Título" />
@@ -134,6 +169,18 @@ app.innerHTML = `
     </article>
     <section class="edit-home" hidden aria-label="Editar PDF e fotos">
       <div class="edit-hero">
+        <div class="edit-art" aria-hidden="true">
+          <div class="edit-art-stack">
+            <div class="edit-art-page"></div>
+            <div class="edit-art-page"></div>
+            <div class="edit-art-page">
+              <span class="edit-art-mark m1"></span>
+              <span class="edit-art-mark m2"></span>
+              <span class="edit-art-mark m3">➜</span>
+              <span class="edit-art-mark m4">⭐</span>
+            </div>
+          </div>
+        </div>
         <h1>Editar PDF e fotos</h1>
         <p>Carregue a partitura que você já tem e trabalhe em cima dela: marque com caneta e marca-texto, escreva, cole selos, apague, e baixe o PDF marcado. A IA também lê as notas e transforma em partitura editável.</p>
         <button type="button" class="edit-drop" data-act="edit-load">
@@ -300,7 +347,7 @@ app.innerHTML = `
       </div>
     </div>
   </div>
-  <div class="toast"></div>
+  <div class="toast" role="status" aria-live="polite"></div>
   <input type="file" accept=".sf2,.sf3" hidden data-soundfont />
   <input type="file" multiple accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-stage-file />
   <input type="file" accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-file />
@@ -470,6 +517,7 @@ function stopPlayback() {
 }
 
 function updatePlayButton() {
+  $('.topbar [data-act="play"]').classList.toggle('playing', !!playing);
   $('.topbar [data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Ouvir</span>`;
   app.querySelectorAll<HTMLElement>('.float-play').forEach((b) => (b.innerHTML = playing ? ICON.stop : ICON.play));
 }
@@ -1022,6 +1070,9 @@ app.addEventListener('click', (e) => {
     case 'export-xml': closeMenu(); return exportXml();
     case 'export-midi': closeMenu(); return exportMid();
     case 'tab': return setTab(el.dataset.tab as Tab);
+    case 'home': return setTab('home');
+    case 'home-score': return void homeOpenScore(el.dataset.id!);
+    case 'home-event': return void homeOpenEvent(el.dataset.id!);
     case 'library': closeMenu(); return void openLibrary();
     case 'lib-open': return void libraryOpen(el.dataset.id!);
     case 'lib-dup': return void libraryDuplicate(el.dataset.id!);
@@ -1536,7 +1587,7 @@ function setCloudDoc(doc: CloudDoc | null) {
 
 /** Abre uma partitura que não está na nuvem (arquivo, nova, exemplo). */
 function openLocal(score: Score) {
-  if (tab === 'edit') setTab('write');
+  if (tab === 'edit' || tab === 'home') setTab('write');
   cloudDetach(false);
   closeDocView();
   editor.load(score);
@@ -1698,6 +1749,7 @@ async function cloudSaveNew() {
 }
 
 async function cloudOpen(id: string) {
+  if (tab === 'home' || tab === 'edit') setTab('write');
   try {
     const r = await cloud.loadScore(id);
     const role = await cloud.roleFor(id, r.ownerId);
@@ -2737,11 +2789,12 @@ document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dar
 applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');
 void initCloud();
 if (annotPrefs.marking) toggleMarking(true);
-void resumeOpenDoc();
+// o documento aberto volta quando a pessoa entra na aba Editar
 
 // ---------------------------------------------------------------- aba Tocar (palco)
 
 const performEl = $<HTMLElement>('.perform');
+const homeEl = $<HTMLElement>('.home');
 const stageEl = $<HTMLElement>('.perform-stage');
 const stageHost = $<HTMLElement>('.perform-host');
 const eventsEl = $<HTMLElement>('.events-panel');
@@ -2790,9 +2843,15 @@ function setTab(next: Tab) {
     closeOverlays();
   }
   tab = next;
-  safeSet(TAB_KEY, tab);
+  try {
+    sessionStorage.setItem(TAB_KEY, tab);
+  } catch {
+    /* sem armazenamento */
+  }
   app.classList.toggle('perform-mode', tab === 'perform');
   app.classList.toggle('edit-mode', tab === 'edit');
+  app.classList.toggle('at-home', tab === 'home');
+  homeEl.hidden = tab !== 'home';
   performEl.hidden = tab !== 'perform';
   $('.sheet').hidden = tab !== 'write';
   editHomeEl.hidden = true;
@@ -2802,12 +2861,39 @@ function setTab(next: Tab) {
     b.setAttribute('aria-selected', String(on));
   });
   window.scrollTo(0, 0);
+  positionTabInk();
   if (tab === 'perform') renderPerform();
+  else if (tab === 'home') void renderHome();
   else if (tab === 'edit') {
     if (doc) showDocView(true);
-    else renderEditHome();
+    else {
+      renderEditHome();
+      void resumeOpenDoc();
+    }
   } else render();
+  // entrada: a folha volta para a estante
+  if (tab !== 'home') replay(tab === 'write' ? $('.sheet') : tab === 'perform' ? $('.perform-wrap') : doc ? docViewEl : $('.edit-hero'), tab === 'edit' ? 'fade-up' : 'enter-3d');
 }
+
+/** Reinicia uma animação de entrada (classe CSS) num elemento. */
+function replay(el: HTMLElement, cls: string) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  el.addEventListener('animationend', () => el.classList.remove(cls), { once: true });
+}
+
+/** Marcador das abas: desliza até a aba ativa. */
+function positionTabInk() {
+  const tabs = $('.tabs');
+  const on = tabs.querySelector<HTMLElement>('.tab.on');
+  tabs.classList.toggle('ink-off', !on);
+  if (!on) return;
+  tabs.style.setProperty('--tx', `${on.offsetLeft}px`);
+  tabs.style.setProperty('--tw', `${on.offsetWidth}px`);
+}
+window.addEventListener('resize', () => positionTabInk());
+void document.fonts?.ready.then(() => positionTabInk());
 
 const editHomeEl = $<HTMLElement>('.edit-home');
 
@@ -3416,9 +3502,17 @@ async function flushFeedback() {
 window.addEventListener('resize', () => tab === 'perform' && renderPerform());
 
 
+// Ao chegar, o Início. Recarregar a página na mesma aba do navegador volta para onde estava.
 {
-  const saved = localStorage.getItem(TAB_KEY);
-  if (saved === 'perform' || saved === 'edit') setTab(saved);
+  let saved: string | null = null;
+  try {
+    saved = sessionStorage.getItem(TAB_KEY);
+  } catch {
+    /* sem armazenamento */
+  }
+  if (cloud.parseShareHash(location.hash)) setTab('write');
+  else if (saved === 'perform' || saved === 'edit' || saved === 'write') setTab(saved);
+  else setTab('home');
 }
 
 // ---------------------------------------------------------------- minhas partituras
@@ -3461,9 +3555,9 @@ function renderLibrary() {
     ? `<div class="lib-undo" role="status">“${escapeHtml(libraryTrash.title)}” foi apagada. <button type="button" class="link-btn" data-act="lib-undo">Desfazer</button></div>`
     : '';
   const rows = list
-    .map((e) => {
+    .map((e, i) => {
       const current = e.id === editor.score.id;
-      return `<li class="lib-row ${current ? 'current' : ''}">
+      return `<li class="lib-row ${current ? 'current' : ''}" style="--i:${Math.min(i, 12)}">
         <button type="button" class="lib-main" data-act="lib-open" data-id="${e.id}" title="${current ? 'Esta é a partitura aberta' : 'Abrir'}">
           <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}</span>
           <small>${[e.composer && escapeHtml(e.composer), escapeHtml(e.summary), `editada ${when(e.updatedAt)}`].filter(Boolean).join(' · ')}</small>
@@ -3575,4 +3669,137 @@ async function editDeleteDoc(id: string) {
   }
   void renderEditHome();
   toast('Documento apagado');
+}
+
+// entrada da folha na estante e marcador das abas
+positionTabInk();
+if (tab === 'write') replay($('.sheet'), 'enter-3d');
+
+// pilha de folhas da aba Editar acompanha o mouse (só com mouse e sem movimento reduzido)
+if (matchMedia('(pointer: fine)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const hero = $<HTMLElement>('.edit-hero');
+  const stack = $<HTMLElement>('.edit-art-stack');
+  hero.addEventListener('pointermove', (e) => {
+    const r = hero.getBoundingClientRect();
+    stack.style.setProperty('--rx', `${((e.clientX - r.left) / r.width - 0.5) * 24}deg`);
+    stack.style.setProperty('--ry', `${-((e.clientY - r.top) / r.height - 0.5) * 16}deg`);
+  });
+  hero.addEventListener('pointerleave', () => {
+    stack.style.setProperty('--rx', '0deg');
+    stack.style.setProperty('--ry', '0deg');
+  });
+}
+
+// ---------------------------------------------------------------- início
+
+
+function greeting(d = new Date()): string {
+  const h = d.getHours();
+  return h < 5 ? 'Boa noite' : h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+}
+
+function displayName(): string | null {
+  if (!session) return null;
+  const meta = session.user.user_metadata as { name?: string; full_name?: string } | undefined;
+  const raw = meta?.name || meta?.full_name || session.user.email?.split('@')[0] || '';
+  const first = raw.split(/[\s._-]+/)[0];
+  return first ? first.charAt(0).toUpperCase() + first.slice(1) : null;
+}
+
+async function renderHome() {
+  if (tab !== 'home') return;
+  const name = displayName();
+  const today = new Date();
+  $('.home-eyebrow').textContent = new Intl.DateTimeFormat('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' }).format(today);
+  $('#home-hello').innerHTML = `${greeting(today)}${name ? `, <em>${escapeHtml(name)}</em>` : ''}.`;
+  // a partitura aberta, pequena, na estante
+  const host = $<HTMLElement>('.home-preview-host');
+  // folha sempre clara (papel), em qualquer tema
+  renderScore(host, editor.score, { width: 760, selection: null, playingTime: null, cursor: null, theme: { ink: '#131a33', muted: '#7d849c', accent: '#131a33', playing: '#0f8f7c', warn: 'transparent' } });
+
+  const shelf = $<HTMLElement>('.home-shelf');
+  const [scores, evs, docs] = await Promise.all([listLibrary(), listEvents(), listDocs()]);
+  if (tab !== 'home') return;
+  const todayIso = today.toISOString().slice(0, 10);
+  const next = evs.find((e) => e.date && e.date >= todayIso) ?? evs[0];
+  const recent = scores.slice(0, 4);
+  const card = (title: string, body: string, cls = '') => `<section class="home-card ${cls}"><h2>${title}</h2>${body}</section>`;
+  const daysTo = (iso: string) => {
+    const [y, m, d] = iso.split('-').map(Number);
+    const diff = Math.round((new Date(y, m - 1, d).getTime() - new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()) / 86400000);
+    return diff === 0 ? 'hoje' : diff === 1 ? 'amanhã' : diff > 1 ? `em ${diff} dias` : '';
+  };
+  shelf.innerHTML = [
+    card(
+      'Continue de onde parou',
+      recent.length
+        ? `<ul class="home-list">${recent
+            .map(
+              (e, i) => `<li style="--i:${i}"><button type="button" class="home-row" data-act="home-score" data-id="${e.id}">
+                <span class="home-row-title">${escapeHtml(e.title)}${e.id === editor.score.id ? '<span class="lib-badge">aberta</span>' : ''}</span>
+                <small>${escapeHtml(e.summary)} · ${when(e.updatedAt)}</small></button></li>`,
+            )
+            .join('')}</ul>
+          <button type="button" class="link-btn" data-act="library">Ver todas as partituras</button>`
+        : '<p class="home-empty">Suas partituras aparecem aqui. Comece em Escrever.</p>',
+    ),
+    card(
+      next ? 'Próximo evento' : 'Eventos',
+      next
+        ? `<button type="button" class="home-event" data-act="home-event" data-id="${next.id}">
+            <span class="home-event-when">${next.date ? `${escapeHtml(formatEventDate(next.date))}${daysTo(next.date) ? ` · <b>${daysTo(next.date)}</b>` : ''}` : 'sem data'}</span>
+            <span class="home-event-name">${escapeHtml(next.name)}</span>
+            <small>${[next.place && escapeHtml(next.place), `${next.items.length} ${next.items.length === 1 ? 'partitura' : 'partituras'}`].filter(Boolean).join(' · ')}</small>
+            <span class="home-event-go">${ICON.play}Abrir no palco</span>
+          </button>`
+        : '<p class="home-empty">Monte o repertório de uma apresentação em Tocar → Eventos.</p>',
+      'home-card-event',
+    ),
+    card(
+      'Documentos',
+      docs.length
+        ? `<ul class="home-list">${docs
+            .slice(0, 3)
+            .map((d, i) => `<li style="--i:${i}"><button type="button" class="home-row" data-act="doc-open" data-id="${d.id}"><span class="home-row-title">${escapeHtml(d.name)}</span><small>PDF ou foto · ${when(d.updatedAt)}</small></button></li>`)
+            .join('')}</ul>`
+        : '<p class="home-empty">PDFs e fotos que você marcar ficam aqui.</p>',
+    ),
+  ].join('');
+  if (!session) {
+    shelf.insertAdjacentHTML('beforeend', `<p class="home-cloud">Entre na <button type="button" class="link-btn" data-act="cloud">Nuvem</button> para ter suas partituras em qualquer aparelho.</p>`);
+  }
+}
+
+async function homeOpenScore(id: string) {
+  if (id !== editor.score.id) {
+    const e = await getEntry(id);
+    if (!e) return toast('Não encontrei esta partitura');
+    openLocal(migrateScore(e.score));
+  }
+  setTab('write');
+}
+
+async function homeOpenEvent(id: string) {
+  const ev = (await listEvents()).find((x) => x.id === id);
+  setTab('perform');
+  if (!ev?.items.length) return void toggleEvents(true);
+  stageItem = { event: ev, index: 0 };
+  renderPerform();
+}
+
+// cartões dos modos inclinam em 3D com o mouse
+if (matchMedia('(pointer: fine)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  homeEl.querySelectorAll<HTMLElement>('.home-mode').forEach((c) => {
+    c.addEventListener('pointermove', (e) => {
+      const r = c.getBoundingClientRect();
+      c.style.setProperty('--rx', `${((e.clientY - r.top) / r.height - 0.5) * -10}deg`);
+      c.style.setProperty('--ry', `${((e.clientX - r.left) / r.width - 0.5) * 12}deg`);
+      c.style.setProperty('--mx', `${((e.clientX - r.left) / r.width) * 100}%`);
+      c.style.setProperty('--my', `${((e.clientY - r.top) / r.height) * 100}%`);
+    });
+    c.addEventListener('pointerleave', () => {
+      c.style.setProperty('--rx', '0deg');
+      c.style.setProperty('--ry', '0deg');
+    });
+  });
 }

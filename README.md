@@ -49,6 +49,16 @@ Fórmula de compasso, tonalidade e instrumentos novos ficam na paleta de comando
 
 A partitura é salva automaticamente no navegador.
 
+## Início
+
+Ao abrir o Music Wiss aparece o **Início**: saudação pelo horário (com o seu
+nome, se você entrou na Nuvem), a partitura aberta numa estante em 3D sobre uma
+pauta que se desenha, e três portas: **Escrever**, **Editar** e **Tocar**.
+Embaixo: **Continue de onde parou** (partituras recentes), **Próximo evento**
+(abre direto no palco, com "hoje", "amanhã" ou "em N dias") e **Documentos**.
+O logo no topo volta para o Início. Recarregar a página na mesma aba do
+navegador mantém você onde estava.
+
 ## Minhas partituras
 
 Botão **Partituras** no topo (ou Ctrl+Shift+O, ou Arquivo → Minhas
@@ -214,6 +224,22 @@ O que fica no banco: `scores` (a partitura em JSON e um número de versão),
 `score_shares` (os links) e `score_members` (quem entrou por link e com que
 papel). Só o dono apaga a partitura e cria links; quem tem link de edição pode
 salvar; quem tem link de leitura só abre.
+
+## Visual
+
+Identidade "sala de concerto": palco azul-noite com luz de refletor, a
+partitura iluminada na estante e destaques em latão (o metal dos
+instrumentos). Fontes: Bricolage Grotesque (títulos da interface), Manrope
+(texto) e Fraunces (título dentro da partitura, como na gravura musical).
+
+- Movimento com propósito: a folha entra na estante em 3D ao abrir ou trocar
+  de aba; o marcador das abas (com as cinco linhas da pauta) desliza; diálogos
+  sobem com profundidade; o botão Ouvir pulsa enquanto toca.
+- Aba Editar: pilha de folhas marcadas em 3D que acompanha o mouse.
+- Quem pede menos movimento no sistema (prefers-reduced-motion) recebe tudo
+  parado.
+- Tema claro e escuro com as mesmas cores-base (tokens no topo de
+  `src/ui/style.css`).
 
 ## Arquitetura
 

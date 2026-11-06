@@ -40,6 +40,8 @@ import { exportMidi } from './io/midi';
 import type { EventItem, PerformEvent } from './perform/events';
 import { addDoc, addItem, addScore, createEvent, deleteEvent, formatEventDate, listEvents, moveItem, removeItem, saveEvent } from './perform/events';
 import { sharePdfToWhatsApp } from './perform/share';
+import type { LibraryEntry } from './library/library';
+import { deleteFromLibrary, filterLibrary, getEntry, listLibrary, putEntry, saveToLibrary, toEntry } from './library/library';
 import type { FeedbackInput } from './cloud/cloud';
 
 const STORAGE_KEY = 'music-wiss:score';
@@ -90,10 +92,12 @@ app.innerHTML = `
     <div class="spacer"></div>
     <button class="icon-btn" data-act="palette" title="Paleta de comandos (Ctrl+K)">${ICON.search}<span>Comandos</span><span class="kbd">Ctrl K</span></button>
     <button class="icon-btn" data-act="new" title="Nova partitura">${ICON.plus}<span>Nova</span></button>
+    <button class="icon-btn" data-act="library" title="Minhas partituras: ver, abrir e apagar (Ctrl+Shift+O)">${ICON.folder}<span>Partituras</span></button>
     <div class="menu">
       <button class="icon-btn" data-act="file-menu" aria-haspopup="true" title="Abrir e exportar">${ICON.download}<span>Arquivo</span></button>
       <div class="menu-list" hidden>
         <button data-act="open">${ICON.upload}<span>Abrir…</span><small>MusicXML, MIDI, PDF, foto, .wiss.json</small></button>
+        <button data-act="library">${ICON.folder}<span>Minhas partituras</span><small>ver, abrir e apagar</small></button>
         <button data-act="docs">${ICON.doc}<span>Documentos recentes</span><small>PDFs e fotos com marcações</small></button>
         <button data-act="save">${ICON.download}<span>Salvar</span><small>.wiss.json · Ctrl S</small></button>
         <hr />
@@ -247,6 +251,17 @@ app.innerHTML = `
     <div class="panel dialog assistant-panel">
       <h2>Documentos recentes</h2>
       <div class="docs-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="library" hidden>
+    <div class="panel dialog library-panel" role="dialog" aria-modal="true" aria-labelledby="lib-h">
+      <div class="library-head">
+        <h2 id="lib-h">Minhas partituras</h2>
+        <button type="button" class="icon-btn primary" data-act="lib-new">${ICON.plus}<span>Nova</span></button>
+      </div>
+      <input class="library-search" type="search" placeholder="Buscar por título ou compositor" aria-label="Buscar partituras" />
+      <div class="library-body"></div>
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
@@ -453,6 +468,10 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return openPalette();
   }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    return void openLibrary();
+  }
   if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
     e.preventDefault();
     return setTab(tab === 'perform' ? 'write' : 'perform');
@@ -563,6 +582,7 @@ function commands(): Command[] {
   const list: Command[] = [
     { id: 'mode', label: editor.inputMode ? 'Sair do modo de escrita' : 'Entrar no modo de escrita', hint: 'N', run: () => editor.toggleInputMode() },
     { id: 'play', label: playing ? 'Parar reprodução' : 'Ouvir a partir do cursor', hint: 'Espaço', run: togglePlay },
+    { id: 'library', label: 'Minhas partituras: ver, abrir e apagar…', hint: 'Ctrl Shift O', run: () => void openLibrary() },
     { id: 'tab-perform', label: tab === 'perform' ? 'Voltar para Escrever' : 'Tocar: partitura limpa e tela cheia', hint: 'Ctrl Shift P', run: () => setTab(tab === 'perform' ? 'write' : 'perform') },
     { id: 'events', label: 'Eventos: salvar esta partitura num repertório', run: () => { setTab('perform'); void toggleEvents(true); } },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
@@ -834,7 +854,10 @@ function safeSet(key: string, value: string) {
 let saveTimer = 0;
 function autosave() {
   clearTimeout(saveTimer);
-  saveTimer = window.setTimeout(() => safeSet(STORAGE_KEY, JSON.stringify(editor.score)), 400);
+  saveTimer = window.setTimeout(() => {
+    safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+    void saveToLibrary(editor.score);
+  }, 400);
 }
 
 function demoScore(): Score {
@@ -968,6 +991,13 @@ app.addEventListener('click', (e) => {
     case 'export-xml': closeMenu(); return exportXml();
     case 'export-midi': closeMenu(); return exportMid();
     case 'tab': return setTab(el.dataset.tab as Tab);
+    case 'library': closeMenu(); return void openLibrary();
+    case 'lib-open': return void libraryOpen(el.dataset.id!);
+    case 'lib-dup': return void libraryDuplicate(el.dataset.id!);
+    case 'lib-delete': return void libraryDelete(el.dataset.id!);
+    case 'lib-undo': return void libraryUndo();
+    case 'lib-new': closeOverlays(); return void openOverlay('new');
+    case 'lib-doc-delete': return void libraryDeleteDoc(el.dataset.id!);
   }
   onEventAct(el.dataset.act ?? '', el);
 });
@@ -3314,3 +3344,144 @@ window.addEventListener('resize', () => tab === 'perform' && renderPerform());
 
 
 if (localStorage.getItem(TAB_KEY) === 'perform') setTab('perform');
+
+// ---------------------------------------------------------------- minhas partituras
+
+let libraryList: LibraryEntry[] = [];
+let libraryDocs: Array<{ id: string; name: string; updatedAt: number }> = [];
+/** Última partitura apagada, para desfazer. */
+let libraryTrash: LibraryEntry | null = null;
+const libraryBody = $<HTMLElement>('.library-body');
+const librarySearch = $<HTMLInputElement>('.library-search');
+
+async function openLibrary() {
+  if (tab === 'perform') setTab('write');
+  openOverlay('library');
+  librarySearch.value = '';
+  // garante que a partitura aberta agora aparece na lista
+  clearTimeout(saveTimer);
+  safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  await saveToLibrary(editor.score);
+  libraryBody.innerHTML = '<p class="sound-note">Carregando…</p>';
+  [libraryList, libraryDocs] = await Promise.all([listLibrary(), listDocs()]);
+  renderLibrary();
+  librarySearch.focus();
+}
+
+librarySearch.addEventListener('input', () => renderLibrary());
+
+function when(t: number): string {
+  const d = new Date(t);
+  const today = new Date();
+  const same = d.toDateString() === today.toDateString();
+  return same ? `hoje, ${d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}` : d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: d.getFullYear() === today.getFullYear() ? undefined : 'numeric' });
+}
+
+function renderLibrary() {
+  const q = librarySearch.value;
+  const list = filterLibrary(libraryList, q);
+  const docs = libraryDocs.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const undo = libraryTrash
+    ? `<div class="lib-undo" role="status">“${escapeHtml(libraryTrash.title)}” foi apagada. <button type="button" class="link-btn" data-act="lib-undo">Desfazer</button></div>`
+    : '';
+  const rows = list
+    .map((e) => {
+      const current = e.id === editor.score.id;
+      return `<li class="lib-row ${current ? 'current' : ''}">
+        <button type="button" class="lib-main" data-act="lib-open" data-id="${e.id}" title="${current ? 'Esta é a partitura aberta' : 'Abrir'}">
+          <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}</span>
+          <small>${[e.composer && escapeHtml(e.composer), escapeHtml(e.summary), `editada ${when(e.updatedAt)}`].filter(Boolean).join(' · ')}</small>
+        </button>
+        <button type="button" class="lib-icon" data-act="lib-dup" data-id="${e.id}" title="Fazer uma cópia" aria-label="Fazer uma cópia de ${escapeHtml(e.title)}">${ICON.copy}</button>
+        <button type="button" class="lib-icon danger" data-act="lib-delete" data-id="${e.id}" title="Apagar" aria-label="Apagar ${escapeHtml(e.title)}">${ICON.trash}</button>
+      </li>`;
+    })
+    .join('');
+  const docRows = docs
+    .map(
+      (d) => `<li class="lib-row ${docStored?.id === d.id && docView ? 'current' : ''}">
+        <button type="button" class="lib-main" data-act="doc-open" data-id="${d.id}" title="Abrir com as marcações">
+          <span class="lib-title">${escapeHtml(d.name)}</span><small>PDF ou foto · aberto ${when(d.updatedAt)}</small>
+        </button>
+        <button type="button" class="lib-icon danger" data-act="lib-doc-delete" data-id="${d.id}" title="Apagar" aria-label="Apagar ${escapeHtml(d.name)}">${ICON.trash}</button>
+      </li>`,
+    )
+    .join('');
+  libraryBody.innerHTML = `${undo}
+    <p class="sound-note">Ficam guardadas neste navegador e são salvas sozinhas enquanto você escreve.${session ? ' As da sua conta estão em Nuvem.' : ''}</p>
+    ${list.length ? `<h3 class="lib-h">Partituras <span>${list.length}</span></h3><ul class="lib-list">${rows}</ul>` : `<p class="empty-events">${q.trim() ? 'Nenhuma partitura com esse nome.' : 'Nenhuma partitura ainda. Crie uma com Nova.'}</p>`}
+    ${docs.length ? `<h3 class="lib-h">PDFs e fotos <span>${docs.length}</span></h3><ul class="lib-list">${docRows}</ul>` : ''}`;
+}
+
+async function libraryOpen(id: string) {
+  if (id === editor.score.id) return closeOverlays();
+  const e = await getEntry(id);
+  if (!e) return toast('Não encontrei esta partitura');
+  closeOverlays();
+  stopPlayback();
+  openLocal(migrateScore(e.score));
+  clearTimeout(saveTimer);
+  safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  toast(`“${e.title}” aberta`);
+}
+
+async function libraryDuplicate(id: string) {
+  const e = await getEntry(id);
+  if (!e) return;
+  const copy = JSON.parse(JSON.stringify(e.score)) as Score;
+  copy.id = `s${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  copy.title = `${e.title} (cópia)`;
+  await putEntry(toEntry(copy));
+  libraryList = await listLibrary();
+  renderLibrary();
+  toast('Cópia criada');
+}
+
+async function libraryDelete(id: string) {
+  const e = libraryList.find((x) => x.id === id) ?? (await getEntry(id));
+  if (!e) return;
+  const current = id === editor.score.id;
+  const ok = await askConfirm(
+    'Apagar partitura?',
+    `“${e.title}” será apagada deste navegador${current ? ' e fechada' : ''}.${cloudDoc && current ? ' A cópia na Nuvem continua lá (apague em Nuvem, se quiser).' : ''} Você ainda pode desfazer logo em seguida.`,
+    'Apagar',
+  );
+  if (!ok) return void openLibrary();
+  await deleteFromLibrary(id);
+  libraryTrash = e;
+  if (current) {
+    clearTimeout(saveTimer);
+    const next = (await listLibrary())[0];
+    stopPlayback();
+    openLocal(next ? migrateScore(next.score) : createScore());
+    safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+  }
+  openOverlay('library');
+  [libraryList, libraryDocs] = await Promise.all([listLibrary(), listDocs()]);
+  renderLibrary();
+  toast(current ? `Apagada. Abrimos ${libraryList.length ? `“${editor.score.title}”` : 'uma partitura nova'}.` : 'Partitura apagada');
+}
+
+async function libraryUndo() {
+  if (!libraryTrash) return;
+  await putEntry(libraryTrash);
+  toast(`“${libraryTrash.title}” voltou`);
+  libraryTrash = null;
+  libraryList = await listLibrary();
+  renderLibrary();
+}
+
+async function libraryDeleteDoc(id: string) {
+  const d = libraryDocs.find((x) => x.id === id);
+  if (!d) return;
+  const ok = await askConfirm('Apagar documento?', `“${d.name}” e todas as marcações feitas nele serão apagados deste navegador. O arquivo original no seu aparelho não muda.`, 'Apagar');
+  if (ok) await forgetDoc(id);
+  openOverlay('library');
+  libraryDocs = await listDocs();
+  renderLibrary();
+}
+
+void saveToLibrary(editor.score);
+
+// não perde a última mudança se a página fechar antes do salvamento automático
+window.addEventListener('pagehide', () => safeSet(STORAGE_KEY, JSON.stringify(editor.score)));

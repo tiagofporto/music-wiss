@@ -49,6 +49,21 @@ Fórmula de compasso, tonalidade e instrumentos novos ficam na paleta de comando
 
 A partitura é salva automaticamente no navegador.
 
+## Minhas partituras
+
+Botão **Partituras** no topo (ou Ctrl+Shift+O, ou Arquivo → Minhas
+partituras). Toda partitura criada, aberta de um arquivo ou vinda da nuvem fica
+guardada neste navegador e é salva sozinha enquanto você escreve (partituras
+novas ainda vazias e sem título não entram).
+
+- Lista com título, compositor, instrumentos, compassos e quando foi editada;
+  a aberta aparece marcada. Busca por título ou compositor (sem acento).
+- **Abrir**, **fazer uma cópia** e **apagar** (com confirmação e **Desfazer**
+  logo em seguida). Apagar a partitura aberta abre a mais recente.
+- Os PDFs e fotos abertos aparecem na mesma tela e também podem ser apagados
+  (as marcações vão junto; o arquivo original no aparelho não muda).
+- As partituras da sua conta continuam em **Nuvem**, onde também dá para apagar.
+
 ## Abrir e exportar
 
 No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela paleta):
@@ -208,6 +223,7 @@ src/
   cloud/      Conta, partituras na nuvem, links e tempo real (Supabase, carregado sob demanda)
   ai/         Resumo da partitura para o assistente e leitura da transcrição da IA
   annotate/   Marcações à mão (caneta, marca-texto, texto, borracha)
+  library/    Minhas partituras: biblioteca local (IndexedDB) com busca, cópia e apagar
   perform/    Aba Tocar: eventos (repertórios no IndexedDB) e envio do PDF pelo WhatsApp
   doc/        PDF (pdf.js, sob demanda) e fotos: páginas, documentos guardados, exportar
   ui/         Estilos, ícones e atalhos

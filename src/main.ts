@@ -11,10 +11,11 @@ import { keyName } from './model/key';
 import { pitchLabel, spellMidi, toMidi } from './model/pitch';
 import type { Step } from './model/pitch';
 import type { Score } from './model/score';
-import { createScore, effectiveKey, effectiveTimeSignature, INSTRUMENTS, MAX_VOICES, migrateScore } from './model/score';
+import type { Articulation, Dynamic } from './model/score';
+import { ARTICULATION_NAMES_PT, ARTICULATIONS, barMark, DYNAMICS, createScore, effectiveKey, effectiveTimeSignature, INSTRUMENTS, MAX_VOICES, migrateScore } from './model/score';
 import { describeValidation, validateVoice } from './model/validation';
 import { Fraction } from './model/fraction';
-import { renderScore } from './render/renderer';
+import { DYNAMIC_GLYPH, renderScore } from './render/renderer';
 import type { RenderResult, RenderTheme } from './render/renderer';
 import type { Command } from './ui/commands';
 import { DURATION_GLYPH, DURATION_KEYS, GLYPH, SHORTCUTS } from './ui/commands';
@@ -81,6 +82,7 @@ app.innerHTML = `
   </main>
 
   <aside class="status" aria-live="polite"></aside>
+  <section class="expr-panel" aria-label="Expressão" hidden></section>
   <nav class="dock" aria-label="Ferramentas de escrita"></nav>
 
   <div class="overlay" data-overlay="palette" hidden>
@@ -177,6 +179,8 @@ function render() {
   }
   hintEl.hidden = editor.events().length > 0 || editor.inputMode;
   renderDock();
+  renderExpr();
+  placeEntry();
   renderStatus();
 }
 
@@ -201,6 +205,7 @@ function renderDock() {
     <button data-act="sharp" class="${alter === 1 ? 'on' : ''}" title="Sustenido (+)"><span class="smufl">${GLYPH.sharp}</span><small>+</small></button>
     <button data-act="tie" class="${sel?.notes.length && sel.notes.every((n) => n.tieToNext) ? 'on' : ''}" title="Ligadura (T)"><span class="smufl">${GLYPH.tie}</span><small>T</small></button>
     <button data-act="tuplet" title="Tercina (Shift+3)"><span class="tuplet-ico">3</span><small>⇧3</small></button>
+    <button data-act="expr" class="expr-btn ${exprOpen ? 'on' : ''}" title="Dinâmicas, articulações, letra, cifras e repetições"><span class="smufl">${DYNAMIC_GLYPH.mf}</span><small>mais</small></button>
     <span class="sep"></span>
     <div class="voices" role="group" aria-label="Voz">${Array.from({ length: MAX_VOICES }, (_, v) => `<button data-voice="${v}" class="voice v${v} ${editor.pos.voiceIndex === v ? 'on' : ''}" title="Voz ${v + 1} (Alt+${v + 1})">${v + 1}</button>`).join('')}</div>
   `;
@@ -253,7 +258,7 @@ function togglePlay() {
   const parts = editor.score.parts;
   const t0 = engine.now() + 0.08;
   for (const n of notes) {
-    engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * 0.95, velocity: n.velocity });
+    engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * n.gate, velocity: n.velocity });
   }
   const state = { timers: [] as number[], time: null as number | null };
   playing = state;
@@ -359,6 +364,11 @@ function onKey(e: KeyboardEvent) {
   } else if (key === '+' || key === '=') editor.shiftAlter(1);
   else if (key === '-' || key === '_') editor.shiftAlter(-1);
   else if (lower === 't' && !mod) editor.toggleTie();
+  else if (lower === 's' && !mod && !e.altKey) editor.toggleArticulation(e.shiftKey ? 'staccatissimo' : 'staccato');
+  else if (lower === 'v' && !mod && !e.altKey) editor.toggleArticulation(e.shiftKey ? 'marcato' : 'accent');
+  else if (lower === 'u' && !mod && !e.altKey) editor.toggleArticulation('tenuto');
+  else if (lower === 'l' && !mod && !e.altKey) openEntry('lyric');
+  else if (lower === 'h' && !mod && !e.altKey) openEntry('chordSymbol');
   else if (key === 'ArrowLeft') editor.moveCursor(-1, e.shiftKey);
   else if (key === 'ArrowRight') editor.moveCursor(1, e.shiftKey);
   else if (key === 'ArrowUp') editor.transposeSelected(mod ? 'octave' : 'semitone', 1);
@@ -393,6 +403,14 @@ function commands(): Command[] {
     { id: 'export-midi', label: 'Exportar MIDI', run: exportMid },
     { id: 'sound', label: 'Som: volumes, SoundFont e teclado MIDI…', run: openSound },
     { id: 'midi', label: midiLink ? 'Desconectar teclado MIDI' : 'Conectar teclado MIDI', run: () => void toggleMidi() },
+    { id: 'lyric', label: 'Escrever letra na nota selecionada', hint: 'L', run: () => openEntry('lyric') },
+    { id: 'chord-symbol', label: 'Escrever cifra na nota selecionada', hint: 'H', run: () => openEntry('chordSymbol') },
+    { id: 'repeat-start', label: `Início de repetição (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('repeatStart') },
+    { id: 'repeat-end', label: `Fim de repetição (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('repeatEnd') },
+    { id: 'ending1', label: `Casa de 1ª vez (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('ending1') },
+    { id: 'ending2', label: `Casa de 2ª vez (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('ending2') },
+    ...DYNAMICS.map((d) => ({ id: `dyn-${d}`, label: `Dinâmica: ${d}`, run: () => editor.setDynamic(d) })),
+    ...ARTICULATIONS.map((a) => ({ id: `art-${a}`, label: `Articulação: ${ARTICULATION_NAMES_PT[a]}`, hint: ART_KEYS[a], run: () => editor.toggleArticulation(a) })),
     { id: 'theme', label: 'Alternar tema claro/escuro', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
     { id: 'help', label: 'Ver atalhos de teclado', hint: '?', run: () => openOverlay('help') },
     { id: 'undo', label: 'Desfazer', hint: 'Ctrl Z', run: () => editor.undo() },
@@ -677,6 +695,12 @@ app.addEventListener('click', (e) => {
     case 'new': return openOverlay('new');
     case 'palette': return openPalette();
     case 'sound': return openSound();
+    case 'expr': return toggleExpr();
+    case 'dyn': return editor.setDynamic(el.dataset.value as Dynamic);
+    case 'art': return editor.toggleArticulation(el.dataset.value as Articulation);
+    case 'lyric': return openEntry('lyric');
+    case 'chord-symbol': return openEntry('chordSymbol');
+    case 'bar': return editor.toggleBar(el.dataset.value as 'repeatStart' | 'repeatEnd' | 'ending1' | 'ending2');
     case 'load-sf': return $<HTMLInputElement>('[data-soundfont]').click();
     case 'clear-sf': return clearSoundFont();
     case 'midi': return void toggleMidi();
@@ -803,20 +827,6 @@ window.addEventListener('drop', (e) => {
   const file = e.dataTransfer?.files[0];
   if (file) void openFile(file);
 });
-
-// ---------------------------------------------------------------- início
-
-let savedTheme: string | null = null;
-try {
-  savedTheme = localStorage.getItem(THEME_KEY);
-} catch {
-  /* sem armazenamento */
-}
-const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
-updatePlayButton();
-// espera a fonte SMuFL carregar antes do primeiro desenho
-document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light'));
-applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');
 
 // ---------------------------------------------------------------- som: painel, SoundFont e MIDI
 
@@ -1010,3 +1020,167 @@ function midiWrite(notes: MidiNote[], late: boolean) {
   else editor.insertChord(pitches);
   muteNextSound = false;
 }
+
+// ---------------------------------------------------------------- expressão: dinâmicas, articulações, texto, repetições
+
+const ART_KEYS: Partial<Record<Articulation, string>> = { staccato: 'S', staccatissimo: 'Shift S', accent: 'V', marcato: 'Shift V', tenuto: 'U' };
+const ART_GLYPH: Record<Articulation, string> = {
+  staccato: '', staccatissimo: '', tenuto: '', accent: '', marcato: '', fermata: '',
+};
+const exprEl = $<HTMLElement>('.expr-panel');
+let exprOpen = false;
+
+function toggleExpr(force?: boolean) {
+  exprOpen = force ?? !exprOpen;
+  render();
+}
+
+function renderExpr() {
+  exprEl.hidden = !exprOpen;
+  if (!exprOpen) return;
+  const sel = editor.selectedEvents();
+  const first = sel[0];
+  const dyn = first?.marks?.dynamic;
+  const hasArt = (a: Articulation) => sel.length > 0 && sel.every((e) => e.marks?.articulations?.includes(a));
+  const bar = barMark(editor.score, editor.selectionMeasure());
+  const mNo = editor.selectionMeasure() + 1;
+  exprEl.innerHTML = `
+    <div class="expr-group" role="group" aria-label="Dinâmicas">
+      <span class="expr-label">Dinâmica</span>
+      ${DYNAMICS.map((d) => `<button data-act="dyn" data-value="${d}" class="${dyn === d ? 'on' : ''}" title="${d}"><span class="smufl dyn">${DYNAMIC_GLYPH[d]}</span></button>`).join('')}
+    </div>
+    <div class="expr-group" role="group" aria-label="Articulações">
+      <span class="expr-label">Articulação</span>
+      ${ARTICULATIONS.map((a) => `<button data-act="art" data-value="${a}" class="${hasArt(a) ? 'on' : ''}" title="${ARTICULATION_NAMES_PT[a]}${ART_KEYS[a] ? ` (${ART_KEYS[a]})` : ''}"><span class="smufl art">${ART_GLYPH[a]}</span></button>`).join('')}
+    </div>
+    <div class="expr-group" role="group" aria-label="Texto">
+      <span class="expr-label">Texto</span>
+      <button data-act="lyric" class="text-btn" title="Letra (L)">Letra<small>L</small></button>
+      <button data-act="chord-symbol" class="text-btn" title="Cifra (H)">Cifra<small>H</small></button>
+    </div>
+    <div class="expr-group" role="group" aria-label="Repetições no compasso ${mNo}">
+      <span class="expr-label">Compasso ${mNo}</span>
+      <button data-act="bar" data-value="repeatStart" class="${bar.repeatStart ? 'on' : ''}" title="Início de repetição"><span class="smufl art"></span></button>
+      <button data-act="bar" data-value="repeatEnd" class="${bar.repeatEnd ? 'on' : ''}" title="Fim de repetição"><span class="smufl art"></span></button>
+      <button data-act="bar" data-value="ending1" class="text-btn ${bar.ending === 1 ? 'on' : ''}" title="Casa de 1ª vez">1ª</button>
+      <button data-act="bar" data-value="ending2" class="text-btn ${bar.ending === 2 ? 'on' : ''}" title="Casa de 2ª vez">2ª</button>
+    </div>
+  `;
+}
+
+// ---- letra e cifra: caixa de texto em cima da nota
+
+type EntryKind = 'lyric' | 'chordSymbol';
+let entry: { kind: EntryKind; index: number } | null = null;
+const entryInput = document.createElement('input');
+entryInput.className = 'text-entry';
+entryInput.spellcheck = false;
+entryInput.autocomplete = 'off';
+entryInput.hidden = true;
+scoreEl.parentElement!.appendChild(entryInput);
+
+function openEntry(kind: EntryKind) {
+  const events = editor.events();
+  if (!events.length) return toast('Escreva algumas notas primeiro');
+  let index = Math.max(0, (editor.range()?.[0] ?? editor.cursor - 1));
+  if (kind === 'lyric') index = nextIndex(index, 0, kind) ?? index;
+  goTo(kind, index);
+}
+
+/** Próximo evento que pode receber o texto (letra só em notas; cifra também em pausas). */
+function nextIndex(from: number, dir: 1 | -1 | 0, kind: EntryKind): number | null {
+  const events = editor.events();
+  for (let i = from + dir; i >= 0 && i < events.length; i += dir || 1) {
+    const ev = events[i];
+    if (ev.kind === 'chord' || (kind === 'chordSymbol' && !ev.auto)) return i;
+  }
+  return null;
+}
+
+function goTo(kind: EntryKind, index: number) {
+  entry = { kind, index };
+  editor.clickEvent({ ...editor.pos }, index);
+  entryInput.value = editor.events()[index]?.marks?.[kind] ?? '';
+  entryInput.placeholder = kind === 'lyric' ? 'sí-la-ba' : 'Am7';
+  entryInput.dataset.kind = kind;
+  entryInput.hidden = false;
+  placeEntry();
+  entryInput.focus();
+  entryInput.select();
+}
+
+function placeEntry() {
+  if (!entry || !lastRender) return;
+  const hit = lastRender.hits.find(
+    (h) => h.index === entry!.index && h.pos.partIndex === editor.pos.partIndex && h.pos.staffIndex === editor.pos.staffIndex && h.pos.voiceIndex === editor.pos.voiceIndex,
+  );
+  if (!hit) return;
+  const x = scoreEl.offsetLeft + hit.x + hit.w / 2;
+  const y = scoreEl.offsetTop + (entry.kind === 'lyric' ? hit.y + hit.h + 4 : hit.y - 30);
+  Object.assign(entryInput.style, { left: `${x}px`, top: `${y}px` });
+}
+
+function saveEntry() {
+  if (!entry) return;
+  editor.setText(entry.kind, entry.index, entryInput.value);
+}
+
+function closeEntry() {
+  entry = null;
+  entryInput.hidden = true;
+  scoreEl.focus({ preventScroll: true });
+}
+
+entryInput.addEventListener('keydown', (e) => {
+  if (!entry) return;
+  const kind = entry.kind;
+  const advance = (dir: 1 | -1, suffix = '') => {
+    if (suffix && !entryInput.value.trim()) return;
+    entryInput.value = entryInput.value.replace(/-+$/, '') + suffix;
+    saveEntry();
+    const next = nextIndex(entry!.index, dir, kind);
+    if (next === null) return closeEntry();
+    goTo(kind, next);
+  };
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    saveEntry();
+    closeEntry();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    closeEntry();
+  } else if (e.key === ' ' || (e.key === 'Tab' && !e.shiftKey)) {
+    e.preventDefault();
+    advance(1);
+  } else if (e.key === 'Tab' && e.shiftKey) {
+    e.preventDefault();
+    advance(-1);
+  } else if (e.key === '-' && kind === 'lyric') {
+    // hífen: a palavra continua na próxima nota
+    e.preventDefault();
+    advance(1, '-');
+  }
+});
+entryInput.addEventListener('blur', () => {
+  // clicar fora salva o que foi digitado
+  setTimeout(() => {
+    if (entry && document.activeElement !== entryInput) {
+      saveEntry();
+      closeEntry();
+    }
+  }, 0);
+});
+
+// ---------------------------------------------------------------- início
+
+let savedTheme: string | null = null;
+try {
+  savedTheme = localStorage.getItem(THEME_KEY);
+} catch {
+  /* sem armazenamento */
+}
+const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+updatePlayButton();
+// espera a fonte SMuFL carregar antes do primeiro desenho
+document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light'));
+applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');

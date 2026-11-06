@@ -1,7 +1,7 @@
-import { collectNotes } from '../audio/sequencer';
+import { perform } from '../audio/sequencer';
 import { Fraction } from '../model/fraction';
 import type { Score } from '../model/score';
-import { effectiveTimeSignature, measureCapacity } from '../model/score';
+import { effectiveTimeSignature } from '../model/score';
 
 /** Resolução do arquivo: pulsos (ticks) por semínima. */
 export const TICKS_PER_QUARTER = 480;
@@ -46,7 +46,8 @@ function track(events: TrackEvent[]): number[] {
  * uma trilha por instrumento, com o programa General MIDI de cada um.
  */
 export function exportMidi(score: Score): Uint8Array {
-  const { notes, end } = collectNotes(score);
+  // repetições desdobradas: o arquivo toca como a partitura soa
+  const { notes, measures } = perform(score);
 
   // trilha 0: título, andamento e fórmulas de compasso
   const conductor: TrackEvent[] = [];
@@ -54,16 +55,14 @@ export function exportMidi(score: Score): Uint8Array {
   conductor.push({ tick: 0, order: 0, data: [0xff, 0x03, ...varLen(title.length), ...title] });
   const mpq = Math.round(60_000_000 / score.tempo);
   conductor.push({ tick: 0, order: 1, data: [0xff, 0x51, 0x03, (mpq >> 16) & 0xff, (mpq >> 8) & 0xff, mpq & 0xff] });
-  let t = Fraction.ZERO;
   let prev = '';
-  for (let mi = 0; t.lt(end) || mi === 0; mi++) {
-    const ts = effectiveTimeSignature(score, mi);
+  for (const m of measures.length ? measures : [{ measure: 0, played: Fraction.ZERO }]) {
+    const ts = effectiveTimeSignature(score, m.measure);
     const key = `${ts.beats}/${ts.beatType}`;
     if (key !== prev) {
-      conductor.push({ tick: toTicks(t), order: 2, data: [0xff, 0x58, 0x04, ts.beats, Math.log2(ts.beatType), 24, 8] });
+      conductor.push({ tick: toTicks(m.played), order: 2, data: [0xff, 0x58, 0x04, ts.beats, Math.log2(ts.beatType), 24, 8] });
       prev = key;
     }
-    t = t.add(measureCapacity(ts));
   }
 
   // canais: 0–15 sem o 9 (percussão)
@@ -75,10 +74,14 @@ export function exportMidi(score: Score): Uint8Array {
       { tick: 0, order: 0, data: [0xff, 0x03, ...varLen(name.length), ...name] },
       { tick: 0, order: 1, data: [0xc0 | ch, part.midiProgram & 0x7f] },
     ];
+    const volume = Math.round((part.volume ?? 0.8) * 127);
+    events.push({ tick: 0, order: 1, data: [0xb0 | ch, 7, volume] });
     for (const n of notes.filter((x) => x.partIndex === pi)) {
       const midi = Math.max(0, Math.min(127, n.midi));
       const on = toTicks(n.start);
-      const off = Math.max(on + 1, toTicks(n.start.add(n.length)));
+      // staccato e afins soam mais curtos; o resto, a duração inteira
+      const len = n.gate < 0.9 ? n.length.mul(new Fraction(Math.round(n.gate * 100), 100)) : n.length;
+      const off = Math.max(on + 1, toTicks(n.start.add(len)));
       events.push({ tick: on, order: 3, data: [0x90 | ch, midi, n.velocity] });
       events.push({ tick: off, order: 2, data: [0x80 | ch, midi, 0] });
     }

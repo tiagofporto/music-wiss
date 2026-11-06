@@ -5,8 +5,8 @@ import type { Fifths } from '../model/key';
 import { keyAlter } from '../model/key';
 import type { Alter, Pitch, Step } from '../model/pitch';
 import { clefMiddle, diatonicIndex, toMidi, nearestOctave, transposeOctave, transposeSemitone } from '../model/pitch';
-import type { Score, Staff, TimeSignature } from '../model/score';
-import { allStaves, createPart, effectiveKey, effectiveTimeSignature, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
+import type { Articulation, BarMark, Dynamic, Marks, Score, Staff, TimeSignature } from '../model/score';
+import { allStaves, barMark, cloneMarks, createPart, setBarMark, tidyMarks, effectiveKey, effectiveTimeSignature, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
 import type { LogicalEvent } from '../model/sequence';
 import { cloneNotes, logicalLength, normalizeMeasures, padTo, readLogical, reflowAll, writeLogical } from '../model/sequence';
 
@@ -584,7 +584,7 @@ export class Editor {
     const tupletIds = new Map<string, string>();
     const items = this.clipboard.map((e) => {
       const tuplet = e.tuplet && { ...e.tuplet, id: tupletIds.get(e.tuplet.id) ?? tupletIds.set(e.tuplet.id, newId('t')).get(e.tuplet.id)! };
-      return { ...e, id: newId('c'), notes: cloneNotes(e.notes).map((n) => ({ ...n, id: newId('n') })), tuplet, auto: undefined };
+      return { ...e, id: newId('c'), notes: cloneNotes(e.notes).map((n) => ({ ...n, id: newId('n') })), tuplet, auto: undefined, marks: cloneMarks(e.marks) };
     });
     events.splice(this.cursor, 0, ...items);
     this.anchor = null; // colar de novo acrescenta outra cópia logo depois
@@ -599,6 +599,86 @@ export class Editor {
   setTimeSignatureHere(ts: TimeSignature): void {
     const m = this.cursorMeasure();
     this.mutate((s) => setChange(s, m, { timeSignature: ts }));
+  }
+
+  // ------------------------------------------------------------ expressão e texto
+
+  /** Compasso da nota selecionada (ou do cursor, sem seleção). */
+  selectionMeasure(): number {
+    const r = this.range();
+    if (!r) return this.cursorMeasure();
+    const events = this.events();
+    let t = Fraction.ZERO;
+    for (let i = 0; i < r[0]; i++) t = t.add(events[i].length);
+    return Math.min(this.measureAt(t), this.staff.measures.length - 1);
+  }
+
+  private changeMarks(indices: number[], fn: (m: Marks, ev: LogicalEvent) => void): void {
+    const events = this.events();
+    const valid = indices.filter((i) => events[i]);
+    if (!valid.length) return;
+    this.snapshot();
+    for (const i of valid) {
+      const ev = events[i];
+      const m = cloneMarks(ev.marks) ?? {};
+      fn(m, ev);
+      ev.marks = tidyMarks(m);
+      if (!ev.marks) delete ev.marks;
+    }
+    this.commit(events);
+  }
+
+  private rangeIndices(): number[] {
+    const r = this.range();
+    if (!r) return [];
+    return Array.from({ length: r[1] - r[0] }, (_, k) => r[0] + k);
+  }
+
+  /** Liga/desliga uma articulação nas notas selecionadas (fermata vale também para pausas). */
+  toggleArticulation(a: Articulation): void {
+    const events = this.events();
+    const idx = this.rangeIndices().filter((i) => events[i].kind === 'chord' || a === 'fermata');
+    if (!idx.length) return;
+    const allHave = idx.every((i) => events[i].marks?.articulations?.includes(a));
+    // staccato e staccatissimo (e acento e marcato) não andam juntos
+    const rival: Partial<Record<Articulation, Articulation>> = { staccato: 'staccatissimo', staccatissimo: 'staccato', accent: 'marcato', marcato: 'accent' };
+    this.changeMarks(idx, (m) => {
+      const list = (m.articulations ?? []).filter((x) => x !== a && x !== rival[a]);
+      m.articulations = allHave ? list : [...list, a];
+    });
+  }
+
+  /** Põe a dinâmica no primeiro evento selecionado (de novo a mesma = tirar). */
+  setDynamic(d: Dynamic | null): void {
+    const idx = this.rangeIndices();
+    if (!idx.length) return;
+    const first = this.events()[idx[0]];
+    const value = d && first.marks?.dynamic === d ? undefined : (d ?? undefined);
+    this.changeMarks([idx[0]], (m) => {
+      m.dynamic = value;
+    });
+  }
+
+  /** Texto (letra ou cifra) de um evento da voz atual, pelo índice lógico. */
+  setText(kind: 'lyric' | 'chordSymbol', index: number, value: string): void {
+    const current = this.events()[index]?.marks?.[kind] ?? '';
+    if (current === value.trim()) return;
+    this.changeMarks([index], (m) => {
+      m[kind] = value;
+    });
+  }
+
+  /** Marca de repetição/casa no compasso da seleção (de novo a mesma = tirar). */
+  toggleBar(kind: 'repeatStart' | 'repeatEnd' | 'ending1' | 'ending2'): void {
+    const mi = this.selectionMeasure();
+    const cur = barMark(this.score, mi);
+    this.mutate((s) => {
+      let patch: Partial<Omit<BarMark, 'measure'>>;
+      if (kind === 'ending1') patch = { ending: cur.ending === 1 ? undefined : 1 };
+      else if (kind === 'ending2') patch = { ending: cur.ending === 2 ? undefined : 2 };
+      else patch = { [kind]: !cur[kind] };
+      setBarMark(s, mi, patch);
+    });
   }
 
   /** Muda a tonalidade a partir do compasso do cursor. */

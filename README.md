@@ -56,9 +56,21 @@ No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela pa
 | Formato | Abrir | Exportar | Observações |
 | --- | --- | --- | --- |
 | `.wiss.json` | ✓ | ✓ | Formato nativo, sem perdas |
-| MusicXML (`.musicxml`, `.xml`, `.mxl`) | ✓ | ✓ | Notas, acordes, até 4 vozes, 2 pautas por instrumento, ligaduras, quiálteras, mudanças de compasso/tom, andamento e transposição. O que o editor ainda não tem (dinâmicas, letra, articulações) é ignorado na importação, com aviso |
-| MIDI (`.mid`) | | ✓ | Formato 1, uma trilha por instrumento, com programa General MIDI, andamento e fórmulas de compasso |
+| MusicXML (`.musicxml`, `.xml`, `.mxl`) | ✓ | ✓ | Notas, acordes, até 4 vozes, 2 pautas por instrumento, ligaduras, quiálteras, mudanças de compasso/tom, andamento, transposição, dinâmicas, articulações, letra (1ª estrofe), cifras, repetições e casas. O que o editor ainda não tem (apojaturas, ligaduras de expressão, crescendos) é ignorado na importação, com aviso |
+| MIDI (`.mid`) | | ✓ | Formato 1, uma trilha por instrumento, com programa General MIDI, volume, andamento, fórmulas de compasso, dinâmicas e repetições desdobradas |
 | PDF | | ✓ | A4, título na 1ª página, sistemas sem corte entre páginas, numeração |
+
+## Expressão, texto e repetições
+
+O botão **mais** na barra de baixo abre o painel de expressão (também tem tudo na paleta, `Ctrl+K`):
+
+- **Dinâmicas** (ppp a fff, fp, sfz): valem da nota selecionada em diante e mudam a intensidade na reprodução e no MIDI.
+- **Articulações:** staccato (`S`), staccatissimo (`Shift+S`), acento (`V`), marcato (`Shift+V`), tenuto (`U`) e fermata. Staccato encurta a nota tocada; acento e marcato reforçam.
+- **Letra** (`L`): abre uma caixa embaixo da nota. `Espaço` vai para a próxima nota, `-` separa sílabas (com hífen desenhado entre elas), `Enter` termina.
+- **Cifras** (`H`): texto livre como `Am7`, `Bbmaj7/D`, `F#m7b5`, mostrado com ♭/♯. `Espaço` vai para o próximo evento.
+- **Repetições:** início e fim de repetição e casas de 1ª e 2ª vez no compasso da nota selecionada. A reprodução e o MIDI tocam a música desdobrada.
+
+Tudo isso vai e volta pelo MusicXML (`<dynamics>`, `<articulations>`, `<lyric>`, `<harmony>`, `<repeat>`, `<ending>`).
 
 ## Som e teclado MIDI
 
@@ -82,6 +94,7 @@ src/
     sequence.ts    Distribui as notas pelos compassos (ligaduras na barra, quiálteras
                    inteiras) e mantém todas as pautas com o mesmo número de compassos
     validation.ts  Validação de compassos (vazio, incompleto, completo, excedido)
+    chords.ts      Cifras: leitura (fundamental, tipo, baixo) para MusicXML e exibição
   editor/     Comandos de edição, cursor, desfazer/refazer
   render/     Layout da página (largura dos compassos, quebra de linha, justificação)
               + desenho com VexFlow e fonte SMuFL Bravura
@@ -118,5 +131,5 @@ src/
 
 - Fase 2: ~~importar/exportar MusicXML, exportar MIDI e PDF~~ (feito); importar MIDI fica para depois.
 - Fase 3: ~~som com soundfonts (SF2/SF3), volumes por instrumento e entrada por teclado MIDI~~ (feito). Escrita em tempo real (tocando junto com o metrônomo) fica para depois.
-- Fase 4: dinâmicas, articulações, letra, cifras e barras de repetição.
+- Fase 4: ~~dinâmicas, articulações, letra, cifras e barras de repetição~~ (feito). Depois: crescendo/diminuendo, ligaduras de expressão, D.C./D.S./Coda e várias estrofes.
 - Fase 5: contas, nuvem, compartilhamento, colaboração e assistência com IA.

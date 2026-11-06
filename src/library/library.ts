@@ -1,4 +1,5 @@
 import type { Score } from '../model/score';
+import type { DriveLink } from '../cloud/drive';
 
 /**
  * Minhas partituras: cada partitura criada ou aberta no Music Wiss fica
@@ -16,7 +17,13 @@ export interface LibraryEntry {
   createdAt: number;
   updatedAt: number;
   score: Score;
+  /** Id da cópia na conta (tabela scores), quando foi enviada. */
+  cloudId?: string;
+  /** Arquivos no Google Drive, por formato. */
+  drive?: Partial<Record<DriveFormat, DriveLink>>;
 }
+
+export type DriveFormat = 'json' | 'xml' | 'pdf';
 
 /** Partitura nova e vazia, ainda sem título: não vale a pena guardar. */
 export function isBlank(score: Score): boolean {
@@ -45,6 +52,8 @@ export function toEntry(score: Score, previous?: LibraryEntry | null, now = Date
     createdAt: previous?.createdAt ?? now,
     updatedAt: now,
     score: JSON.parse(JSON.stringify(score)) as Score,
+    ...(previous?.cloudId ? { cloudId: previous.cloudId } : {}),
+    ...(previous?.drive ? { drive: previous.drive } : {}),
   };
 }
 
@@ -108,4 +117,16 @@ export async function putEntry(entry: LibraryEntry): Promise<void> {
 
 export async function deleteFromLibrary(id: string): Promise<void> {
   await run('readwrite', (s) => s.delete(id));
+}
+
+/** Guarda onde a partitura está na conta ou no Drive (sem mexer na data de edição). */
+export async function linkEntry(id: string, patch: { cloudId?: string | null; drive?: Partial<Record<DriveFormat, DriveLink>> }): Promise<LibraryEntry | null> {
+  const e = await getEntry(id);
+  if (!e) return null;
+  const next: LibraryEntry = { ...e };
+  if (patch.cloudId === null) delete next.cloudId;
+  else if (patch.cloudId) next.cloudId = patch.cloudId;
+  if (patch.drive) next.drive = { ...e.drive, ...patch.drive };
+  await putEntry(next);
+  return next;
 }

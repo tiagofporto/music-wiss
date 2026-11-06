@@ -74,6 +74,27 @@ novas ainda vazias e sem título não entram).
   (as marcações vão junto; o arquivo original no aparelho não muda).
 - As partituras da sua conta continuam em **Nuvem**, onde também dá para apagar.
 
+## Na conta e no Google Drive
+
+Minhas partituras tem três abas: **Neste aparelho**, **Na sua conta** e
+**Google Drive**.
+
+- **Na sua conta**: com login na Nuvem, cada partitura pode ir para o seu
+  perfil (tabela `scores` no Supabase, protegida por RLS). Toque em ☁ numa
+  partitura do aparelho, ou em **Salvar na conta**. Enquanto está aberta, ela
+  salva sozinha e abre em qualquer aparelho com a mesma conta.
+- **Google Drive**: **Salvar no Google Drive** (menu Arquivo ou a biblioteca)
+  grava `Título.wiss.json` na pasta **Music Wiss** do seu Drive; também dá para
+  salvar em MusicXML ou PDF. Salvar de novo atualiza o mesmo arquivo, e se ele
+  mudou no Drive o app pergunta antes de substituir. **Abrir do Google Drive**
+  (menu Arquivo, Editar e Tocar) abre o seletor do Google e leva o arquivo para
+  a aba certa.
+- O Drive usa o escopo `drive.file`: o app só vê o que ele salvou ou o que
+  você escolheu. O token fica só na memória. Configure
+  `VITE_GOOGLE_CLIENT_ID`, `VITE_GOOGLE_API_KEY` e `VITE_GOOGLE_APP_ID` (ver
+  `.env.example`) ou cole os valores na aba Google Drive. Na versão de teste
+  (artifact) o Google não carrega; use o app publicado.
+
 ## Abrir e exportar
 
 No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela paleta):
@@ -184,6 +205,11 @@ a partitura sem distrações. O botão que toca o som agora se chama **Ouvir**.
   aparelho e é enviada quando a pessoa entrar.
 
 ## Nuvem, compartilhamento e assistente
+
+Projeto de produção: **music-wiss** (Supabase, São Paulo), já com as migrações
+aplicadas e a função `assistente` publicada. O build de produção lê a URL e a
+chave publicável de `.env.production`. Para o assistente responder, defina o
+segredo `ANTHROPIC_API_KEY` em Edge Functions > Secrets no painel do Supabase.
 
 O botão **Nuvem** liga o editor a um projeto [Supabase](https://supabase.com):
 

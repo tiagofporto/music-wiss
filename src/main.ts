@@ -40,8 +40,9 @@ import { exportMidi } from './io/midi';
 import type { EventItem, PerformEvent } from './perform/events';
 import { addDoc, addItem, addScore, createEvent, deleteEvent, formatEventDate, listEvents, moveItem, removeItem, saveEvent } from './perform/events';
 import { sharePdfToWhatsApp } from './perform/share';
-import type { LibraryEntry } from './library/library';
-import { deleteFromLibrary, filterLibrary, getEntry, listLibrary, putEntry, saveToLibrary, toEntry } from './library/library';
+import type { DriveFormat, LibraryEntry } from './library/library';
+import { deleteFromLibrary, filterLibrary, getEntry, linkEntry, listLibrary, putEntry, saveToLibrary, toEntry } from './library/library';
+import * as drive from './cloud/drive';
 import type { FeedbackInput } from './cloud/cloud';
 
 const STORAGE_KEY = 'music-wiss:score';
@@ -101,6 +102,10 @@ app.innerHTML = `
         <button data-act="library">${ICON.folder}<span>Minhas partituras</span><small>ver, abrir e apagar</small></button>
         <button data-act="docs">${ICON.doc}<span>Documentos recentes</span><small>PDFs e fotos com marcações</small></button>
         <button data-act="save">${ICON.download}<span>Salvar</span><small>.wiss.json · Ctrl S</small></button>
+        <hr />
+        <button data-act="drive-save">${ICON.drive}<span>Salvar no Google Drive</span><small>pasta Music Wiss</small></button>
+        <button data-act="drive-open">${ICON.drive}<span>Abrir do Google Drive</span><small>partitura, PDF, foto, MIDI</small></button>
+        <button data-act="lib-src" data-src="account">${ICON.cloud}<span>Partituras da conta</span><small>salvas no seu perfil</small></button>
         <hr />
         <button data-act="export-pdf"><span class="fmt">PDF</span><span>Exportar PDF</span><small>para imprimir</small></button>
         <button data-act="export-xml"><span class="fmt">XML</span><span>Exportar MusicXML</span><small>abre em outros programas</small></button>
@@ -188,6 +193,7 @@ app.innerHTML = `
           <strong>Carregar PDF ou foto</strong>
           <span>Clique ou arraste o arquivo para cá · PDF, JPG, PNG</span>
         </button>
+        <button type="button" class="link-btn edit-drive" data-act="drive-open">${ICON.drive}<span>ou abrir do Google Drive</span></button>
         <ul class="edit-tips">
           <li>${ICON.pen}<span><b>Marcar</b> caneta, marca-texto, texto e selos</span></li>
           <li>${ICON.move}<span><b>Mover</b> e corrigir marcações depois</span></li>
@@ -225,6 +231,7 @@ app.innerHTML = `
         </div>
         <div class="perform-group">
           <button class="icon-btn" data-act="stage-open" title="Carregar partitura do aparelho: PDF, foto, MusicXML, MIDI (Ctrl+O)">${ICON.upload}<span>Carregar</span></button>
+          <button class="icon-btn" data-act="drive-open" title="Abrir do Google Drive: PDF, foto, MusicXML, MIDI">${ICON.drive}<span>Drive</span></button>
           <button class="icon-btn" data-act="events" title="Eventos: repertórios salvos (E)">${ICON.list}<span>Eventos</span></button>
           <button class="icon-btn wa" data-act="share-wa" title="Enviar o PDF pelo WhatsApp">${ICON.whatsapp}<span>WhatsApp</span></button>
           <button class="icon-btn" data-act="stage-mine" hidden title="Voltar para a partitura que está em Escrever">${ICON.music}<span>Minha partitura</span></button>
@@ -325,6 +332,11 @@ app.innerHTML = `
       <div class="library-head">
         <h2 id="lib-h">Minhas partituras</h2>
         <button type="button" class="icon-btn primary" data-act="lib-new">${ICON.plus}<span>Nova</span></button>
+      </div>
+      <div class="lib-seg" role="tablist" aria-label="Onde estão as partituras">
+        <button type="button" role="tab" data-act="lib-src" data-src="device" aria-selected="true">${ICON.folder}<span>Neste aparelho</span></button>
+        <button type="button" role="tab" data-act="lib-src" data-src="account" aria-selected="false">${ICON.cloud}<span>Na sua conta</span></button>
+        <button type="button" role="tab" data-act="lib-src" data-src="drive" aria-selected="false">${ICON.drive}<span>Google Drive</span></button>
       </div>
       <input class="library-search" type="search" placeholder="Buscar por título ou compositor" aria-label="Buscar partituras" />
       <div class="library-body"></div>
@@ -1074,6 +1086,18 @@ app.addEventListener('click', (e) => {
     case 'home-score': return void homeOpenScore(el.dataset.id!);
     case 'home-event': return void homeOpenEvent(el.dataset.id!);
     case 'library': closeMenu(); return void openLibrary();
+    case 'lib-src': closeMenu(); return void openLibrary(el.dataset.src as LibSource);
+    case 'lib-account': return void libToAccount(el.dataset.id!);
+    case 'lib-drive': return void driveSave('json', el.dataset.id);
+    case 'acct-open': return void cloudOpen(el.dataset.id!);
+    case 'acct-delete': return void acctDelete(el.dataset.id!, el.dataset.title ?? '');
+    case 'drive-save': closeMenu(); return void driveSave((el.dataset.fmt as DriveFormat) ?? 'json');
+    case 'drive-open': closeMenu(); return void driveOpen();
+    case 'drive-connect': return void driveConnect();
+    case 'drive-disconnect': drive.disconnect(); driveFiles = null; return renderLibrary();
+    case 'drive-file': return void driveOpenFile({ id: el.dataset.id!, name: el.dataset.name ?? 'arquivo', mimeType: el.dataset.mime ?? '', modifiedTime: '' });
+    case 'drive-refresh': driveFiles = null; return void loadDriveFiles();
+    case 'drive-reconfig': drive.saveDriveConfig(null); driveFiles = null; return renderLibrary();
     case 'lib-open': return void libraryOpen(el.dataset.id!);
     case 'lib-dup': return void libraryDuplicate(el.dataset.id!);
     case 'lib-delete': return void libraryDelete(el.dataset.id!);
@@ -1730,6 +1754,7 @@ async function refreshList() {
     cloudListError = err instanceof Error ? err.message : String(err);
   }
   if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+  if (libOpen() && libSource === 'account') renderLibrary();
 }
 
 async function cloudSaveNew() {
@@ -1738,6 +1763,8 @@ async function cloudSaveNew() {
   try {
     const doc = await cloud.createScore(editor.score);
     setCloudDoc(doc);
+    await saveToLibrary(editor.score);
+    await linkEntry(editor.score.id, { cloudId: doc.id });
     await startLive();
     toast('Partitura salva na nuvem');
     void refreshList();
@@ -3524,8 +3551,9 @@ let libraryTrash: LibraryEntry | null = null;
 const libraryBody = $<HTMLElement>('.library-body');
 const librarySearch = $<HTMLInputElement>('.library-search');
 
-async function openLibrary() {
-  if (tab === 'perform') setTab('write');
+async function openLibrary(source?: LibSource) {
+  if (source) libSource = source;
+  if (tab === 'perform' && libSource === 'device') setTab('write');
   openOverlay('library');
   librarySearch.value = '';
   // garante que a partitura aberta agora aparece na lista
@@ -3534,6 +3562,8 @@ async function openLibrary() {
   await saveToLibrary(editor.score);
   libraryBody.innerHTML = '<p class="sound-note">Carregando…</p>';
   [libraryList, libraryDocs] = await Promise.all([listLibrary(), listDocs()]);
+  if (libSource === 'account' && session && !cloudList) void refreshList();
+  if (libSource === 'drive' && drive.driveConnected() && !driveFiles) void loadDriveFiles();
   renderLibrary();
   librarySearch.focus();
 }
@@ -3548,6 +3578,14 @@ function when(t: number): string {
 }
 
 function renderLibrary() {
+  for (const b of document.querySelectorAll<HTMLButtonElement>('.lib-seg [data-src]')) b.setAttribute('aria-selected', String(b.dataset.src === libSource));
+  librarySearch.hidden = (libSource === 'drive' && !(drive.driveConfig() && drive.driveConnected())) || (libSource === 'account' && !session);
+  if (libSource === 'account') return renderAccountLibrary();
+  if (libSource === 'drive') return renderDriveLibrary();
+  renderDeviceLibrary();
+}
+
+function renderDeviceLibrary() {
   const q = librarySearch.value;
   const list = filterLibrary(libraryList, q);
   const docs = libraryDocs.filter((d) => !q.trim() || d.name.toLowerCase().includes(q.trim().toLowerCase()));
@@ -3559,9 +3597,11 @@ function renderLibrary() {
       const current = e.id === editor.score.id;
       return `<li class="lib-row ${current ? 'current' : ''}" style="--i:${Math.min(i, 12)}">
         <button type="button" class="lib-main" data-act="lib-open" data-id="${e.id}" title="${current ? 'Esta é a partitura aberta' : 'Abrir'}">
-          <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}</span>
+          <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}${e.cloudId ? '<span class="lib-badge where">na conta</span>' : ''}${e.drive?.json ? '<span class="lib-badge where">no Drive</span>' : ''}</span>
           <small>${[e.composer && escapeHtml(e.composer), escapeHtml(e.summary), `editada ${when(e.updatedAt)}`].filter(Boolean).join(' · ')}</small>
         </button>
+        ${session && !e.cloudId ? `<button type="button" class="lib-icon" data-act="lib-account" data-id="${e.id}" title="Enviar para a sua conta" aria-label="Enviar ${escapeHtml(e.title)} para a sua conta">${ICON.cloudUp}</button>` : ''}
+        ${drive.driveConfig() ? `<button type="button" class="lib-icon" data-act="lib-drive" data-id="${e.id}" title="${e.drive?.json ? 'Atualizar no Google Drive' : 'Salvar no Google Drive'}" aria-label="Salvar ${escapeHtml(e.title)} no Google Drive">${ICON.drive}</button>` : ''}
         <button type="button" class="lib-icon" data-act="lib-dup" data-id="${e.id}" title="Fazer uma cópia" aria-label="Fazer uma cópia de ${escapeHtml(e.title)}">${ICON.copy}</button>
         <button type="button" class="lib-icon danger" data-act="lib-delete" data-id="${e.id}" title="Apagar" aria-label="Apagar ${escapeHtml(e.title)}">${ICON.trash}</button>
       </li>`;
@@ -3578,7 +3618,7 @@ function renderLibrary() {
     )
     .join('');
   libraryBody.innerHTML = `${undo}
-    <p class="sound-note">Ficam guardadas neste navegador e são salvas sozinhas enquanto você escreve.${session ? ' As da sua conta estão em Nuvem.' : ''}</p>
+    <p class="sound-note">Ficam guardadas neste navegador e são salvas sozinhas enquanto você escreve.${session ? ' Use ☁ para enviar uma para a sua conta.' : ''}</p>
     ${list.length ? `<h3 class="lib-h">Partituras <span>${list.length}</span></h3><ul class="lib-list">${rows}</ul>` : `<p class="empty-events">${q.trim() ? 'Nenhuma partitura com esse nome.' : 'Nenhuma partitura ainda. Crie uma com Nova.'}</p>`}
     ${docs.length ? `<h3 class="lib-h">PDFs e fotos <span>${docs.length}</span></h3><ul class="lib-list">${docRows}</ul>` : ''}`;
 }
@@ -3589,6 +3629,7 @@ async function libraryOpen(id: string) {
   if (!e) return toast('Não encontrei esta partitura');
   closeOverlays();
   stopPlayback();
+  if (e.cloudId && session && cloudList?.mine.some((r) => r.id === e.cloudId)) return void cloudOpen(e.cloudId);
   openLocal(migrateScore(e.score));
   clearTimeout(saveTimer);
   safeSet(STORAGE_KEY, JSON.stringify(editor.score));
@@ -3803,3 +3844,263 @@ if (matchMedia('(pointer: fine)').matches && !matchMedia('(prefers-reduced-motio
     });
   });
 }
+
+
+// ---------------------------------------------------------------- conta e Google Drive na biblioteca
+
+type LibSource = 'device' | 'account' | 'drive';
+let libSource: LibSource = 'device';
+let driveFiles: drive.DriveFile[] | null = null;
+let driveMsg = '';
+let driveBusy = '';
+let driveDraft: drive.DriveConfig = { clientId: '', apiKey: '', appId: '' };
+
+function libOpen(): boolean {
+  return !$('[data-overlay="library"]').hidden;
+}
+
+const shortWhen = (iso: string) => (iso ? when(Date.parse(iso)) : '');
+
+function renderAccountLibrary() {
+  const q = librarySearch.value.trim().toLowerCase();
+  if (!cloudConfig()) {
+    libraryBody.innerHTML = `<div class="lib-empty">${ICON.cloud}<p><b>Guarde as partituras no seu perfil</b>Com uma conta, cada partitura fica salva no banco de dados e abre em qualquer aparelho. Este Music Wiss ainda não está ligado a um projeto da Nuvem.</p><button type="button" class="icon-btn" data-act="cloud">Configurar a Nuvem</button></div>`;
+    return;
+  }
+  if (!session) {
+    libraryBody.innerHTML = `<div class="lib-empty">${ICON.cloud}<p><b>Entre para salvar na sua conta</b>As partituras ficam no seu perfil, salvam sozinhas enquanto você escreve e abrem em qualquer aparelho.</p><button type="button" class="icon-btn primary" data-act="cloud">Entrar ou criar conta</button></div>`;
+    return;
+  }
+  if (!cloudList) {
+    libraryBody.innerHTML = `<p class="sound-note">${cloudListError ? escapeHtml(cloudListError) : 'Carregando as partituras da sua conta…'}</p>`;
+    return;
+  }
+  const match = (r: CloudScoreRow) => !q || r.title.toLowerCase().includes(q);
+  const roleName: Record<Role, string> = { owner: 'sua', edit: 'pode editar', view: 'só ver' };
+  const row = (r: CloudScoreRow, i: number, role?: Role) => `<li class="lib-row ${cloudDoc?.id === r.id ? 'current' : ''}" style="--i:${Math.min(i, 12)}">
+      <button type="button" class="lib-main" data-act="acct-open" data-id="${r.id}" title="Abrir e continuar salvando na conta">
+        <span class="lib-title">${escapeHtml(r.title)}${cloudDoc?.id === r.id ? '<span class="lib-badge">aberta</span>' : ''}</span>
+        <small>${role ? `${roleName[role]} · ` : ''}salva ${when(Date.parse(r.updated_at))}</small>
+      </button>
+      ${role ? '' : `<button type="button" class="lib-icon danger" data-act="acct-delete" data-id="${r.id}" data-title="${escapeHtml(r.title)}" title="Apagar da conta" aria-label="Apagar ${escapeHtml(r.title)} da conta">${ICON.trash}</button>`}
+    </li>`;
+  const mine = cloudList.mine.filter(match);
+  const shared = cloudList.shared.filter(match);
+  const open = cloudDoc ? '' : `<div class="lib-cta"><span>A partitura aberta agora está só neste aparelho.</span><button type="button" class="icon-btn primary" data-act="cloud-save">${ICON.cloudUp}<span>Salvar na conta</span></button></div>`;
+  libraryBody.innerHTML = `${open}
+    <p class="sound-note">Conectado como <b>${escapeHtml(session.user.email ?? 'conta')}</b>. Estas partituras ficam no seu perfil e salvam sozinhas enquanto estão abertas.</p>
+    ${mine.length ? `<h3 class="lib-h">Minhas <span>${mine.length}</span></h3><ul class="lib-list">${mine.map((r, i) => row(r, i)).join('')}</ul>` : `<p class="empty-events">${q ? 'Nenhuma partitura com esse nome na conta.' : 'Nenhuma partitura na conta ainda. Em Neste aparelho, toque em ☁ para enviar.'}</p>`}
+    ${shared.length ? `<h3 class="lib-h">Compartilhadas comigo <span>${shared.length}</span></h3><ul class="lib-list">${shared.map((r, i) => row(r, i, (r as CloudScoreRow & { role: Role }).role)).join('')}</ul>` : ''}`;
+}
+
+function renderDriveLibrary() {
+  const cfg = drive.driveConfig();
+  if (!cfg) {
+    const form = drive.driveConfigFromBuild()
+      ? ''
+      : `<form class="drive-config" data-form="drive-config">
+          <label>ID do cliente OAuth<input name="clientId" autocomplete="off" spellcheck="false" placeholder="123…-abc.apps.googleusercontent.com" value="${escapeHtml(driveDraft.clientId)}" required /></label>
+          <label>Chave de API (Picker)<input name="apiKey" autocomplete="off" spellcheck="false" placeholder="AIza…" value="${escapeHtml(driveDraft.apiKey)}" required /></label>
+          <label>Número do projeto<input name="appId" inputmode="numeric" autocomplete="off" placeholder="123456789012" value="${escapeHtml(driveDraft.appId)}" required /></label>
+          <button type="submit" class="icon-btn primary">Ligar o Google Drive</button>
+        </form>`;
+    libraryBody.innerHTML = `<div class="lib-empty">${ICON.drive}<p><b>Salvar e abrir no Google Drive</b>Para ligar o Drive, este Music Wiss precisa de um projeto no Google Cloud (Drive API e Picker API ativadas). São valores públicos: a chave secreta do cliente nunca entra aqui.</p></div>
+      ${form}${driveMsg ? `<p class="cloud-msg">${escapeHtml(driveMsg)}</p>` : ''}`;
+    return;
+  }
+  if (!drive.driveConnected()) {
+    libraryBody.innerHTML = `<div class="lib-empty">${ICON.drive}<p><b>Conecte o seu Google Drive</b>O Music Wiss só vê os arquivos que ele mesmo salvar (na pasta Music Wiss) e os que você escolher abrir. O resto do seu Drive continua fechado para ele.</p>
+      <button type="button" class="icon-btn primary" data-act="drive-connect" ${driveBusy ? 'disabled' : ''}>${driveBusy ? escapeHtml(driveBusy) : 'Conectar Google Drive'}</button></div>
+      ${driveMsg ? `<p class="cloud-msg">${escapeHtml(driveMsg)}</p>` : ''}
+      ${drive.driveConfigFromBuild() ? '' : '<p class="sound-note"><button type="button" class="link-btn" data-act="drive-reconfig">Trocar o projeto do Google</button></p>'}`;
+    return;
+  }
+  const q = librarySearch.value.trim().toLowerCase();
+  const kindName = { score: 'partitura Music Wiss', xml: 'MusicXML', midi: 'MIDI', pdf: 'PDF', image: 'foto', other: 'arquivo' } as const;
+  const files = (driveFiles ?? []).filter((f) => f.mimeType !== 'application/vnd.google-apps.folder' && (!q || f.name.toLowerCase().includes(q)));
+  const rows = files
+    .map(
+      (f, i) => `<li class="lib-row" style="--i:${Math.min(i, 12)}">
+        <button type="button" class="lib-main" data-act="drive-file" data-id="${escapeHtml(f.id)}" data-name="${escapeHtml(f.name)}" data-mime="${escapeHtml(f.mimeType)}" title="Abrir no Music Wiss">
+          <span class="lib-title">${escapeHtml(f.name)}</span><small>${kindName[drive.kindOf(f)]} · ${shortWhen(f.modifiedTime)}</small>
+        </button>
+      </li>`,
+    )
+    .join('');
+  libraryBody.innerHTML = `
+    <div class="drive-actions">
+      <button type="button" class="icon-btn primary" data-act="drive-save" data-fmt="json" ${driveBusy ? 'disabled' : ''}>${ICON.cloudUp}<span>Salvar a partitura aberta</span></button>
+      <button type="button" class="icon-btn" data-act="drive-save" data-fmt="xml" ${driveBusy ? 'disabled' : ''}><span class="fmt">XML</span><span>Também em MusicXML</span></button>
+      <button type="button" class="icon-btn" data-act="drive-save" data-fmt="pdf" ${driveBusy ? 'disabled' : ''}><span class="fmt">PDF</span><span>Também em PDF</span></button>
+      <button type="button" class="icon-btn" data-act="drive-open" ${driveBusy ? 'disabled' : ''}>${ICON.search}<span>Escolher no Drive…</span></button>
+    </div>
+    ${driveBusy ? `<p class="sound-note" role="status">${escapeHtml(driveBusy)}</p>` : ''}
+    ${driveMsg ? `<p class="cloud-msg">${escapeHtml(driveMsg)}</p>` : ''}
+    <h3 class="lib-h">Pasta Music Wiss <span>${driveFiles ? files.length : '…'}</span> <button type="button" class="link-btn" data-act="drive-refresh">Atualizar</button></h3>
+    ${driveFiles ? (files.length ? `<ul class="lib-list">${rows}</ul>` : `<p class="empty-events">${q ? 'Nenhum arquivo com esse nome.' : 'A pasta ainda está vazia. Salve a partitura aberta ou escolha um arquivo do seu Drive.'}</p>`) : '<p class="sound-note">Carregando a pasta…</p>'}
+    <p class="sound-note">Salvar de novo atualiza o mesmo arquivo. <button type="button" class="link-btn" data-act="drive-disconnect">Desconectar o Drive</button></p>`;
+}
+
+libraryBody.addEventListener('submit', (e) => {
+  const form = e.target as HTMLFormElement;
+  if (form.dataset.form !== 'drive-config') return;
+  e.preventDefault();
+  const d = new FormData(form);
+  driveDraft = { clientId: String(d.get('clientId')).trim(), apiKey: String(d.get('apiKey')).trim(), appId: String(d.get('appId')).trim() };
+  const problem = drive.validateDriveConfig(driveDraft);
+  driveMsg = problem ?? '';
+  if (!problem) {
+    drive.saveDriveConfig(driveDraft);
+    void drive.prepareDrive().catch(() => undefined);
+  }
+  renderLibrary();
+});
+
+/** Roda uma ação do Drive mostrando o andamento e o erro em português. */
+async function driveRun<T>(label: string, fn: () => Promise<T>): Promise<T | undefined> {
+  driveBusy = label;
+  driveMsg = '';
+  if (libOpen()) renderLibrary();
+  try {
+    return await fn();
+  } catch (err) {
+    console.error(err);
+    driveMsg = drive.driveError(err);
+    toast(driveMsg);
+    return undefined;
+  } finally {
+    driveBusy = '';
+    if (libOpen()) renderLibrary();
+  }
+}
+
+async function driveConnect() {
+  const ok = await driveRun('Esperando o Google…', () => drive.connect());
+  if (ok) {
+    toast('Google Drive conectado');
+    await loadDriveFiles();
+  }
+}
+
+async function loadDriveFiles() {
+  const files = await driveRun('Lendo a pasta Music Wiss…', () => drive.listFiles());
+  if (files) driveFiles = files;
+  if (libOpen()) renderLibrary();
+}
+
+/** Salva no Drive a partitura aberta (ou outra da biblioteca). Salvar de novo atualiza o mesmo arquivo. */
+async function driveSave(format: DriveFormat = 'json', id?: string) {
+  if (!drive.driveConfig()) return void openLibrary('drive');
+  const label = format === 'pdf' ? 'Gerando o PDF e salvando no Drive…' : 'Salvando no Google Drive…';
+  const result = await driveRun(label, async () => {
+    // pede a permissão primeiro: o Google só abre a janela logo depois do clique
+    await drive.connect();
+    let score = editor.score;
+    if (id && id !== editor.score.id) {
+      const e = await getEntry(id);
+      if (!e) throw new Error('Não encontrei esta partitura');
+      score = migrateScore(e.score);
+    } else {
+      clearTimeout(saveTimer);
+      safeSet(STORAGE_KEY, JSON.stringify(editor.score));
+      await saveToLibrary(editor.score);
+    }
+    const entry = await getEntry(score.id);
+    const link = entry?.drive?.[format];
+    const base = (score.title || 'partitura').replace(/[\\/:*?"<>|]+/g, '').trim() || 'partitura';
+    const name = `${base}.${format === 'json' ? 'wiss.json' : format === 'xml' ? 'musicxml' : 'pdf'}`;
+    const blob =
+      format === 'json'
+        ? new Blob([JSON.stringify({ format: 'music-wiss', version: 1, score }, null, 2)], { type: 'application/json' })
+        : format === 'xml'
+          ? new Blob([exportMusicXml(score)], { type: 'application/vnd.recordare.musicxml+xml' })
+          : await (await import('./io/pdf')).exportPdf(score);
+    let target = link?.id;
+    if (link) {
+      const remote = await drive.getFile(link.id);
+      if (!remote) target = undefined;
+      else if (drive.changedSince(link, remote)) {
+        const at = new Date(remote.modifiedTime).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' });
+        const ok = await askConfirm('O arquivo mudou no Drive', `“${remote.name}” foi alterado no Google Drive (${at}) depois que você salvou daqui. Substituir pelo que está no Music Wiss agora?`, 'Substituir');
+        if (!ok) return 'kept' as const;
+      }
+    }
+    const f = await drive.upload(name, blob, target);
+    await linkEntry(score.id, { drive: { [format]: { id: f.id, modifiedTime: f.modifiedTime } } });
+    if (driveFiles) driveFiles = [f, ...driveFiles.filter((x) => x.id !== f.id)];
+    return target ? ('updated' as const) : ('created' as const);
+  });
+  if (result === 'kept') toast('Nada foi alterado no Drive');
+  else if (result === 'updated') toast('Atualizado no Google Drive');
+  else if (result === 'created') toast('Salvo no Google Drive, na pasta Music Wiss');
+  if (result && libOpen()) [libraryList] = await Promise.all([listLibrary()]);
+  if (libOpen()) renderLibrary();
+}
+
+/** Seletor do Google → abre o arquivo na aba certa. */
+async function driveOpen() {
+  if (!drive.driveConfig()) return void openLibrary('drive');
+  const f = await driveRun('Abrindo o Google Drive…', () => drive.pick());
+  if (f) await driveOpenFile(f);
+}
+
+async function driveOpenFile(f: drive.DriveFile) {
+  const got = await driveRun(`Baixando “${f.name}”…`, async () => ({ file: await drive.download(f), meta: await drive.getFile(f.id) }));
+  if (!got) return;
+  if (libOpen()) closeOverlays();
+  if (drive.kindOf(f) === 'score' && tab !== 'perform') {
+    try {
+      const data = JSON.parse(await got.file.text());
+      if (data?.format === 'music-wiss' && data.score?.parts) {
+        stopPlayback();
+        openLocal(migrateScore(data.score as Score));
+        await saveToLibrary(editor.score);
+        if (got.meta) await linkEntry(editor.score.id, { drive: { json: { id: got.meta.id, modifiedTime: got.meta.modifiedTime } } });
+        toast(`“${editor.score.title}” aberta do Google Drive`);
+        return;
+      }
+    } catch {
+      /* segue para o leitor comum, que explica o erro */
+    }
+  }
+  await openFile(got.file);
+}
+
+async function libToAccount(id: string) {
+  if (!session) return openCloud();
+  if (id === editor.score.id && !cloudDoc) {
+    await cloudSaveNew();
+  } else {
+    const e = await getEntry(id);
+    if (!e) return;
+    try {
+      const doc = await cloud.createScore(e.score);
+      await linkEntry(id, { cloudId: doc.id });
+      toast(`“${e.title}” enviada para a sua conta`);
+    } catch (err) {
+      toast(cloud.friendlyError(err));
+    }
+  }
+  libraryList = await listLibrary();
+  void refreshList();
+  if (libOpen()) renderLibrary();
+}
+
+async function acctDelete(id: string, title: string) {
+  const ok = await askConfirm('Apagar da conta?', `“${title}” será apagada da sua conta, e quem tem o link perde o acesso. A cópia neste aparelho continua.`, 'Apagar da conta');
+  if (ok) {
+    try {
+      await cloud.deleteScore(id);
+      if (cloudDoc?.id === id) cloudDetach(false);
+      for (const e of libraryList.filter((x) => x.cloudId === id)) await linkEntry(e.id, { cloudId: null });
+      toast('Apagada da conta');
+    } catch (err) {
+      toast(cloud.friendlyError(err));
+    }
+  }
+  cloudList = null;
+  await openLibrary('account');
+  void refreshList();
+}
+
+if (drive.driveConfig()) setTimeout(() => void drive.prepareDrive().catch(() => undefined), 2500);

@@ -1717,3 +1717,217 @@ p { text-wrap: pretty; }
   .sheet { padding: 28px 12px 48px; }
   .sheet-title { font-size: 26px; }
 }
+
+/* =====================================================================
+   Início: o palco antes do concerto. Pauta que se desenha, notas que
+   flutuam, a sua partitura na estante e três portas (Escrever, Editar, Tocar).
+   ===================================================================== */
+.at-home .topbar > :is([data-act="palette"], [data-act="new"], .menu, .mark-btn, [data-act="assistant"], [data-act="play"]),
+.at-home .dock, .at-home .status, .at-home .expr-panel, .at-home .empty-hint, .at-home .sheet,
+.at-home .annot-bar, .at-home .annot-pop { display: none !important; }
+.at-home .stage { display: block; padding: 8px 20px 60px; }
+.tabs.ink-off .tab-ink { opacity: 0; transform: translateX(var(--tx, 0px)) scale(0.6); }
+.tab-ink { transition: transform 0.45s var(--ease-spring), width 0.45s var(--ease-spring), opacity 0.25s; }
+.brand { border: 0; background: transparent; padding: 4px 6px 4px 2px; border-radius: 12px; cursor: pointer; color: inherit; font: inherit; }
+.brand:hover { background: color-mix(in srgb, var(--chip) 70%, transparent); }
+
+.home { width: min(1180px, 100%); margin: 0 auto; }
+.home-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  align-items: center;
+  gap: 24px;
+  min-height: 320px;
+  padding: 40px 48px;
+  border-radius: 28px;
+  overflow: hidden;
+  isolation: isolate;
+  color: #f3f1ea;
+  background:
+    radial-gradient(ellipse 60% 70% at 78% 30%, rgb(240 194 92 / 26%), transparent 65%),
+    radial-gradient(ellipse 80% 90% at 10% 110%, rgb(84 104 232 / 45%), transparent 60%),
+    linear-gradient(160deg, #1a2252 0%, #0e1430 60%, #090d20 100%);
+  box-shadow: 0 30px 80px -24px rgb(9 13 32 / 60%), 0 1px 0 rgb(255 255 255 / 10%) inset;
+}
+.home-staff { position: absolute; inset: 0; z-index: -1; width: 100%; height: 100%; opacity: 0.55; }
+.home-staff path {
+  fill: none;
+  stroke: rgb(240 194 92 / 55%);
+  stroke-width: 1.2;
+  vector-effect: non-scaling-stroke;
+  stroke-dasharray: 1400;
+  stroke-dashoffset: 1400;
+  animation: draw-staff 1.8s var(--ease-out) forwards;
+  animation-delay: var(--d);
+}
+@keyframes draw-staff { to { stroke-dashoffset: 0; } }
+.home-notes { position: absolute; inset: 0; z-index: -1; pointer-events: none; }
+.home-notes span {
+  position: absolute;
+  left: calc(36% + var(--i) * 4.2%);
+  top: var(--t, 40%);
+  font-size: calc(18px + var(--i) * 2px);
+  color: var(--brass-hi);
+  opacity: 0;
+  text-shadow: 0 0 18px rgb(240 194 92 / 60%);
+  animation: note-in 0.6s var(--ease-spring) forwards, drift 7s ease-in-out infinite;
+  animation-delay: calc(900ms + var(--i) * 140ms), calc(1600ms + var(--i) * 300ms);
+}
+@keyframes note-in { from { opacity: 0; transform: translateY(14px) scale(0.6); } to { opacity: 0.85; transform: none; } }
+@keyframes drift { 50% { translate: 0 -10px; rotate: -6deg; } }
+.home-copy { position: relative; }
+.home-eyebrow { margin: 0 0 10px; font-size: 12px; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: rgb(243 241 234 / 60%); }
+.home-copy h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(38px, 5.4vw, 66px);
+  font-weight: 800;
+  line-height: 0.98;
+  letter-spacing: -0.045em;
+  font-variation-settings: 'wdth' 82;
+  animation: fade-up 0.8s 0.1s var(--ease-out) both;
+}
+.home-copy h1 em {
+  font-style: normal;
+  background: linear-gradient(180deg, var(--brass-hi), #c58f26);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.home-lead { margin: 14px 0 0; font-size: 17px; color: rgb(243 241 234 / 75%); animation: fade-up 0.8s 0.25s var(--ease-out) both; }
+
+/* a partitura aberta, pequena, numa estante em perspectiva */
+.home-preview { perspective: 1100px; height: 250px; display: grid; place-items: center; }
+.home-preview-sheet {
+  width: 380px;
+  height: 230px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #fdfcf8;
+  box-shadow: 0 40px 60px -20px rgb(0 0 0 / 60%), 0 0 0 1px rgb(255 255 255 / 30%);
+  transform: rotateY(-18deg) rotateX(10deg) rotateZ(2deg);
+  transform-origin: 50% 100%;
+  animation: preview-in 1.1s 0.3s var(--ease-out) both;
+}
+@keyframes preview-in { from { opacity: 0; transform: translateY(40px) rotateY(-30deg) rotateX(30deg); } }
+.home-preview-host { width: 760px; transform: scale(0.5); transform-origin: 0 0; padding: 14px; }
+:root[data-theme='dark'] .home-preview-sheet { background: #fdfcf8; }
+
+/* as três portas */
+.home-modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 18px; perspective: 1200px; }
+.home-mode {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-height: 190px;
+  padding: 22px 22px 18px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background:
+    radial-gradient(circle 160px at var(--mx, 50%) var(--my, 0%), color-mix(in srgb, var(--mc) 16%, transparent), transparent 70%),
+    var(--paper);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+  transform: rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg));
+  transform-style: preserve-3d;
+  transition: transform 0.35s var(--ease-out), box-shadow 0.35s var(--ease-out), border-color 0.2s;
+  box-shadow: var(--shadow);
+  animation: fade-up 0.6s var(--ease-out) both;
+}
+.home-mode.m-write { --mc: var(--accent); animation-delay: 0.35s; }
+.home-mode.m-edit { --mc: #e4572e; animation-delay: 0.45s; }
+.home-mode.m-perform { --mc: var(--brass); animation-delay: 0.55s; }
+.home-mode:hover { box-shadow: var(--shadow-lift); border-color: color-mix(in srgb, var(--mc) 45%, var(--line)); }
+.home-mode:focus-visible { outline: none; box-shadow: var(--ring), var(--shadow-lift); }
+.home-mode-art {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  margin-bottom: 8px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, color-mix(in srgb, var(--mc) 85%, #fff), var(--mc));
+  color: #fff;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--mc) 40%, transparent);
+  transform: translateZ(30px);
+}
+.home-mode-art svg { width: 22px; height: 22px; }
+.home-mode strong { font-family: var(--font-display); font-size: 24px; font-weight: 800; letter-spacing: -0.03em; transform: translateZ(20px); }
+.home-mode > span:not(.home-mode-art) { color: var(--ink-soft); line-height: 1.45; transform: translateZ(12px); }
+.home-mode small { margin-top: auto; padding-top: 10px; color: var(--muted); font-size: 12px; }
+
+/* prateleira: continuar, próximo evento, documentos */
+.home-shelf { display: grid; grid-template-columns: 1.2fr 1fr 1fr; gap: 16px; margin-top: 16px; }
+.home-card {
+  padding: 18px 18px 14px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--paper) 86%, transparent);
+  backdrop-filter: blur(8px);
+  animation: fade-up 0.6s 0.65s var(--ease-out) both;
+  min-width: 0;
+}
+.home-card h2 { margin: 0 0 10px; font-size: 12px; font-weight: 800; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); }
+.home-list { list-style: none; margin: 0 0 6px; padding: 0; display: grid; gap: 2px; }
+.home-list li { animation: fade-up 0.4s var(--ease-out) both; animation-delay: calc(0.75s + var(--i) * 60ms); }
+.home-row { width: 100%; display: grid; gap: 2px; padding: 8px 10px; border: 0; border-radius: 12px; background: transparent; text-align: left; cursor: pointer; color: inherit; }
+.home-row:hover { background: color-mix(in srgb, var(--accent-soft) 60%, transparent); }
+.home-row-title { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-row small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.home-empty { margin: 4px 0; color: var(--muted); line-height: 1.5; }
+.home-event {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  padding: 16px;
+  border: 0;
+  border-radius: 16px;
+  text-align: left;
+  cursor: pointer;
+  color: var(--brass-ink);
+  background: linear-gradient(150deg, var(--brass-hi), var(--brass));
+  box-shadow: 0 14px 30px -10px color-mix(in srgb, var(--brass) 70%, transparent);
+  transition: transform 0.25s var(--ease-out);
+}
+.home-event:hover { transform: translateY(-3px) rotate(-0.6deg); }
+.home-event-when { font-size: 12px; font-weight: 700; text-transform: capitalize; }
+.home-event-name { font-family: var(--font-display); font-size: 22px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; }
+.home-event small { opacity: 0.75; }
+.home-event-go { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-weight: 700; font-size: 13px; }
+.home-event-go svg { width: 14px; height: 14px; }
+.home-cloud { grid-column: 1 / -1; margin: 4px 0 0; color: var(--muted); text-align: center; }
+.home-cloud .link-btn { font-weight: 700; color: var(--accent); }
+
+@media (max-width: 980px) {
+  .home-hero { grid-template-columns: 1fr; padding: 32px 26px; }
+  .home-preview { display: none; }
+  .home-modes, .home-shelf { grid-template-columns: 1fr; }
+  .home-mode { min-height: 0; }
+}
+@media (max-width: 760px) { .at-home .stage { padding: 6px 10px 40px; } .home-hero { border-radius: 22px; } }
+@media (prefers-reduced-motion: reduce) {
+  .home-staff path { stroke-dashoffset: 0; }
+  .home-notes span { opacity: 0.85; }
+}
+
+.home-notes span:nth-child(1) { --t: 62%; }
+.home-notes span:nth-child(2) { --t: 40%; }
+.home-notes span:nth-child(3) { --t: 70%; }
+.home-notes span:nth-child(4) { --t: 30%; }
+.home-notes span:nth-child(5) { --t: 58%; }
+.home-notes span:nth-child(6) { --t: 22%; }
+.home-notes span:nth-child(7) { --t: 48%; }
+
+@media (max-width: 980px) { .home-notes span { left: calc(52% + var(--i) * 6%); } }
+@media (max-width: 760px) {
+  .home-hero { min-height: 0; padding: 28px 22px 92px; }
+  .home-notes span { top: auto !important; bottom: calc(14px + (var(--i) - 3) * (var(--i) - 3) * 3px); left: calc(14% + var(--i) * 11%); }
+  .home-mode { grid-template-columns: 48px 1fr; column-gap: 14px; align-items: center; padding: 16px; }
+  .home-mode-art { grid-row: 1 / span 2; margin: 0; }
+  .home-mode strong { font-size: 20px; }
+}
+@media (pointer: coarse) { .home-mode small { display: none; } }
+@media (max-width: 760px) { .home-mode > :not(.home-mode-art) { grid-column: 2; } .home-mode small { padding-top: 4px; } }

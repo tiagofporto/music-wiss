@@ -49,6 +49,16 @@ Fórmula de compasso, tonalidade e instrumentos novos ficam na paleta de comando
 
 A partitura é salva automaticamente no navegador.
 
+## Início
+
+Ao abrir o Music Wiss aparece o **Início**: saudação pelo horário (com o seu
+nome, se você entrou na Nuvem), a partitura aberta numa estante em 3D sobre uma
+pauta que se desenha, e três portas: **Escrever**, **Editar** e **Tocar**.
+Embaixo: **Continue de onde parou** (partituras recentes), **Próximo evento**
+(abre direto no palco, com "hoje", "amanhã" ou "em N dias") e **Documentos**.
+O logo no topo volta para o Início. Recarregar a página na mesma aba do
+navegador mantém você onde estava.
+
 ## Minhas partituras
 
 Botão **Partituras** no topo (ou Ctrl+Shift+O, ou Arquivo → Minhas

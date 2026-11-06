@@ -206,6 +206,11 @@ a partitura sem distrações. O botão que toca o som agora se chama **Ouvir**.
 
 ## Nuvem, compartilhamento e assistente
 
+Projeto de produção: **music-wiss** (Supabase, São Paulo), já com as migrações
+aplicadas e a função `assistente` publicada. O build de produção lê a URL e a
+chave publicável de `.env.production`. Para o assistente responder, defina o
+segredo `ANTHROPIC_API_KEY` em Edge Functions > Secrets no painel do Supabase.
+
 O botão **Nuvem** liga o editor a um projeto [Supabase](https://supabase.com):
 
 - **Conta** com e-mail e senha.

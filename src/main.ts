@@ -16,6 +16,11 @@ import { ARTICULATION_NAMES_PT, ARTICULATIONS, barMark, DYNAMICS, createScore, e
 import { describeValidation, validateVoice } from './model/validation';
 import { Fraction } from './model/fraction';
 import { DYNAMIC_GLYPH, renderScore } from './render/renderer';
+import type { Session } from '@supabase/supabase-js';
+import * as cloud from './cloud/cloud';
+import type { AssistantAnswer, CloudDoc, CloudScoreRow, Role, ShareLink } from './cloud/cloud';
+import { cloudConfig, configFromBuild, saveCloudConfig, validateConfig } from './cloud/config';
+import { describeForAssistant } from './ai/describe';
 import type { RenderResult, RenderTheme } from './render/renderer';
 import type { Command } from './ui/commands';
 import { DURATION_GLYPH, DURATION_KEYS, GLYPH, SHORTCUTS } from './ui/commands';
@@ -57,6 +62,8 @@ app.innerHTML = `
         <button data-act="export-midi"><span class="fmt">MID</span><span>Exportar MIDI</span><small>sequenciadores e DAWs</small></button>
       </div>
     </div>
+    <button class="icon-btn" data-act="assistant" title="Assistente: harmonizar e revisar">${ICON.sparkle}<span>Assistente</span></button>
+    <button class="icon-btn cloud-btn" data-act="cloud" title="Nuvem: conta, partituras e compartilhar">${ICON.cloud}<span>Nuvem</span><span class="cloud-dot" hidden></span></button>
     <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
     <button class="icon-btn primary" data-act="play" title="Tocar (Espaço)"></button>
@@ -119,6 +126,20 @@ app.innerHTML = `
     <div class="panel dialog sound-panel">
       <h2>Som</h2>
       <div class="sound-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="cloud" hidden>
+    <div class="panel dialog cloud-panel">
+      <h2>Nuvem</h2>
+      <div class="cloud-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="assistant" hidden>
+    <div class="panel dialog assistant-panel">
+      <h2>Assistente</h2>
+      <div class="assistant-body"></div>
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
@@ -411,6 +432,8 @@ function commands(): Command[] {
     { id: 'ending2', label: `Casa de 2ª vez (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('ending2') },
     ...DYNAMICS.map((d) => ({ id: `dyn-${d}`, label: `Dinâmica: ${d}`, run: () => editor.setDynamic(d) })),
     ...ARTICULATIONS.map((a) => ({ id: `art-${a}`, label: `Articulação: ${ARTICULATION_NAMES_PT[a]}`, hint: ART_KEYS[a], run: () => editor.toggleArticulation(a) })),
+    { id: 'cloud', label: 'Nuvem: entrar, minhas partituras, compartilhar…', run: openCloud },
+    { id: 'assistant', label: 'Assistente: harmonizar ou revisar…', run: openAssistant },
     { id: 'theme', label: 'Alternar tema claro/escuro', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
     { id: 'help', label: 'Ver atalhos de teclado', hint: '?', run: () => openOverlay('help') },
     { id: 'undo', label: 'Desfazer', hint: 'Ctrl Z', run: () => editor.undo() },
@@ -426,7 +449,7 @@ function commands(): Command[] {
     { id: 'sharp', label: 'Sustenido', hint: '+', run: () => editor.setAlter(1) },
     { id: 'flat', label: 'Bemol', hint: '−', run: () => editor.setAlter(-1) },
     { id: 'natural', label: 'Bequadro (natural)', run: () => editor.setAlter(0) },
-    { id: 'demo', label: 'Carregar exemplo', run: () => editor.load(demoScore()) },
+    { id: 'demo', label: 'Carregar exemplo', run: () => openLocal(demoScore()) },
   ];
   DURATION_ORDER.forEach((type, i) =>
     list.push({ id: `dur-${type}`, label: `Figura: ${DURATION_NAMES_PT[type]}`, hint: String(i + 1), run: () => (editor.inputMode ? editor.setDuration(type) : editor.setSelectedDuration(type)) }),
@@ -595,12 +618,12 @@ async function openFile(file: File) {
     if (name.endsWith('.json')) {
       const data = JSON.parse(new TextDecoder().decode(bytes));
       if (data?.format !== 'music-wiss' || !data.score?.parts) throw new Error('Este .json não é uma partitura do Music Wiss');
-      editor.load(migrateScore(data.score as Score));
+      openLocal(migrateScore(data.score as Score));
       toast('Partitura aberta');
       return;
     }
     const { score, warnings } = importMusicXml(readMusicXmlFile(name, bytes));
-    editor.load(score);
+    openLocal(score);
     toast(warnings.length ? `Partitura aberta. ${warnings[0]}` : 'Partitura aberta');
     if (warnings.length) console.info('Avisos da importação:', warnings);
   } catch (err) {
@@ -671,7 +694,8 @@ let muteNextSound = false;
 
 editor.onChange((change) => {
   if (muteNextSound) muteNextSound = false;
-  else sound(change.sounded);
+  else if (!change.remote) sound(change.sounded);
+  if (!change.remote) scheduleCloudSave();
   autosave();
   render();
 });
@@ -695,6 +719,19 @@ app.addEventListener('click', (e) => {
     case 'new': return openOverlay('new');
     case 'palette': return openPalette();
     case 'sound': return openSound();
+    case 'cloud': return openCloud();
+    case 'assistant': return openAssistant();
+    case 'cloud-save': return void cloudSaveNew();
+    case 'cloud-open': return void cloudOpen(el.dataset.id!);
+    case 'cloud-delete': return void cloudDelete(el.dataset.id!, el.dataset.title ?? '');
+    case 'cloud-share': return void cloudShare(el.dataset.role as 'view' | 'edit');
+    case 'cloud-revoke': return void cloudRevoke();
+    case 'cloud-detach': return cloudDetach(true);
+    case 'cloud-signout': return void cloudSignOut();
+    case 'cloud-reconfig': return cloudReconfigure();
+    case 'cloud-tab': cloudTab = el.dataset.tab as 'in' | 'up'; return renderCloud();
+    case 'ai-run': return void runAssistant();
+    case 'ai-apply': return applyAssistant();
     case 'expr': return toggleExpr();
     case 'dyn': return editor.setDynamic(el.dataset.value as Dynamic);
     case 'art': return editor.toggleArticulation(el.dataset.value as Articulation);
@@ -757,7 +794,7 @@ $<HTMLFormElement>('[data-overlay="new"] form').addEventListener('submit', (e) =
   stopPlayback();
   const f = new FormData(e.target as HTMLFormElement);
   const [beats, beatType] = String(f.get('time')).split('/').map(Number);
-  editor.load(
+  openLocal(
     createScore({
       title: String(f.get('title') || 'Sem título'),
       composer: String(f.get('composer') || ''),
@@ -1171,6 +1208,513 @@ entryInput.addEventListener('blur', () => {
   }, 0);
 });
 
+// ---------------------------------------------------------------- nuvem: conta, partituras, compartilhar, tempo real
+
+const CLOUD_DOC_KEY = 'music-wiss:cloud-doc';
+let session: Session | null = null;
+let cloudDoc: CloudDoc | null = loadCloudDoc();
+let cloudTab: 'in' | 'up' = 'in';
+let cloudList: { mine: CloudScoreRow[]; shared: Array<CloudScoreRow & { role: Role }> } | null = null;
+let cloudListError = '';
+let cloudBusy = '';
+let cloudMsg = '';
+/** O que foi digitado nos formulários (sobrevive ao redesenho do painel). */
+const cloudDraft = { url: '', key: '', email: '' };
+let lastShareUrl = '';
+let pendingLink: ShareLink | null = null;
+let people: string[] = [];
+let stopLive: (() => void) | null = null;
+let saveTimerCloud = 0;
+let saving = false;
+let dirty = false;
+let saveError = '';
+let warnedViewOnly = false;
+
+function loadCloudDoc(): CloudDoc | null {
+  try {
+    const raw = localStorage.getItem(CLOUD_DOC_KEY);
+    return raw ? (JSON.parse(raw) as CloudDoc) : null;
+  } catch {
+    return null;
+  }
+}
+
+function setCloudDoc(doc: CloudDoc | null) {
+  cloudDoc = doc;
+  if (doc) safeSet(CLOUD_DOC_KEY, JSON.stringify(doc));
+  else {
+    try {
+      localStorage.removeItem(CLOUD_DOC_KEY);
+    } catch {
+      /* sem armazenamento */
+    }
+  }
+  updateCloudChip();
+}
+
+/** Abre uma partitura que não está na nuvem (arquivo, nova, exemplo). */
+function openLocal(score: Score) {
+  cloudDetach(false);
+  editor.load(score);
+}
+
+function openCloud() {
+  renderCloud();
+  openOverlay('cloud');
+  if (session && !cloudList) void refreshList();
+}
+
+function updateCloudChip() {
+  const dot = $('.cloud-dot');
+  const label = $('.cloud-btn span:not(.cloud-dot)');
+  dot.hidden = !session;
+  let state = 'on';
+  let text = 'Nuvem';
+  if (session && cloudDoc) {
+    if (saveError) [state, text] = ['error', 'Erro ao salvar'];
+    else if (saving || dirty) [state, text] = ['busy', cloudDoc.role === 'view' ? 'Só leitura' : 'Salvando…'];
+    else [state, text] = ['ok', cloudDoc.role === 'view' ? 'Só leitura' : people.length > 1 ? `Salvo · ${people.length} online` : 'Salvo'];
+  }
+  dot.className = `cloud-dot ${state}`;
+  label.textContent = text;
+}
+
+function renderCloud() {
+  const body = $('.cloud-body');
+  const cfg = cloudConfig();
+  if (!cfg) {
+    body.innerHTML = `
+      <p>Para guardar partituras na nuvem, entrar com uma conta e compartilhar, o Music Wiss usa um projeto <b>Supabase</b>.</p>
+      <p class="sound-note">Crie as tabelas com o arquivo <code>supabase/migrations</code> do repositório e cole aqui a URL e a chave publicável do projeto (Project Settings → API).</p>
+      <form class="cloud-form" data-form="config">
+        <label>URL do projeto<input name="url" placeholder="https://xxxx.supabase.co" value="${escapeHtml(cloudDraft.url)}" required /></label>
+        <label>Chave publicável<input name="key" placeholder="sb_publishable_… ou anon" value="${escapeHtml(cloudDraft.key)}" required /></label>
+        <div class="cloud-actions"><button class="icon-btn primary" type="submit">Conectar</button></div>
+      </form>
+      ${cloudMsg ? `<p class="cloud-msg">${escapeHtml(cloudMsg)}</p>` : ''}`;
+    return;
+  }
+  if (!session) {
+    body.innerHTML = `
+      ${pendingLink ? '<p class="cloud-msg info">Entre na sua conta para abrir a partitura que compartilharam com você.</p>' : ''}
+      <div class="cloud-tabs" role="tablist">
+        <button type="button" data-act="cloud-tab" data-tab="in" class="${cloudTab === 'in' ? 'on' : ''}">Entrar</button>
+        <button type="button" data-act="cloud-tab" data-tab="up" class="${cloudTab === 'up' ? 'on' : ''}">Criar conta</button>
+      </div>
+      <form class="cloud-form" data-form="${cloudTab === 'in' ? 'signin' : 'signup'}">
+        <label>E-mail<input name="email" type="email" autocomplete="email" value="${escapeHtml(cloudDraft.email)}" required /></label>
+        <label>Senha<input name="password" type="password" minlength="6" autocomplete="${cloudTab === 'in' ? 'current-password' : 'new-password'}" required /></label>
+        <div class="cloud-actions">
+          <button class="icon-btn primary" type="submit" ${cloudBusy ? 'disabled' : ''}>${cloudBusy || (cloudTab === 'in' ? 'Entrar' : 'Criar conta')}</button>
+          ${configFromBuild() ? '' : '<button type="button" class="link-btn" data-act="cloud-reconfig">Trocar projeto</button>'}
+        </div>
+      </form>
+      ${cloudMsg ? `<p class="cloud-msg">${escapeHtml(cloudMsg)}</p>` : ''}`;
+    return;
+  }
+
+  const email = session.user.email ?? 'conta';
+  const roleName: Record<Role, string> = { owner: 'sua', edit: 'pode editar', view: 'só ver' };
+  const here = cloudDoc
+    ? `<p>Esta partitura está na nuvem (${roleName[cloudDoc.role]}). ${saveError ? `<b class="warn">${escapeHtml(saveError)}</b>` : saving || dirty ? 'Salvando…' : 'Tudo salvo.'}</p>
+       ${people.length ? `<p class="sound-note">Abertas agora: ${people.map(escapeHtml).join(', ')}</p>` : ''}
+       <div class="cloud-actions">
+         ${cloudDoc.role === 'owner' ? `
+           <button type="button" class="icon-btn" data-act="cloud-share" data-role="view">Link para ver</button>
+           <button type="button" class="icon-btn" data-act="cloud-share" data-role="edit">Link para editar</button>
+           <button type="button" class="link-btn" data-act="cloud-revoke">Desativar links</button>` : ''}
+         <button type="button" class="link-btn" data-act="cloud-detach">Parar de sincronizar</button>
+       </div>
+       ${lastShareUrl ? `<label class="share-url">Link copiado (envie para quem vai abrir)<input readonly value="${escapeHtml(lastShareUrl)}" /></label>` : ''}`
+    : `<p>Esta partitura está só neste navegador.</p>
+       <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="cloud-save" ${cloudBusy ? 'disabled' : ''}>${cloudBusy || 'Salvar na nuvem'}</button></div>`;
+  const row = (r: CloudScoreRow, extra = '') => `
+    <li class="${cloudDoc?.id === r.id ? 'current' : ''}">
+      <span class="cloud-title">${escapeHtml(r.title)}</span>
+      <small>${new Date(r.updated_at).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}${extra}</small>
+      <button type="button" class="icon-btn small" data-act="cloud-open" data-id="${r.id}">Abrir</button>
+      ${extra ? '' : `<button type="button" class="link-btn danger" data-act="cloud-delete" data-id="${r.id}" data-title="${escapeHtml(r.title)}">Apagar</button>`}
+    </li>`;
+  const list = cloudList
+    ? `<section><h3>Minhas partituras</h3>${cloudList.mine.length ? `<ul class="cloud-list">${cloudList.mine.map((r) => row(r)).join('')}</ul>` : '<p class="sound-note">Nenhuma ainda.</p>'}</section>
+       ${cloudList.shared.length ? `<section><h3>Compartilhadas comigo</h3><ul class="cloud-list">${cloudList.shared.map((r) => row(r, ` · ${roleName[r.role]}`)).join('')}</ul></section>` : ''}`
+    : `<p class="sound-note">${cloudListError ? escapeHtml(cloudListError) : 'Carregando suas partituras…'}</p>`;
+  body.innerHTML = `
+    <p class="cloud-user">Conectado como <b>${escapeHtml(email)}</b> <button type="button" class="link-btn" data-act="cloud-signout">Sair</button></p>
+    <section><h3>Esta partitura</h3>${here}</section>
+    ${list}
+    ${cloudMsg ? `<p class="cloud-msg">${escapeHtml(cloudMsg)}</p>` : ''}`;
+}
+
+$('.cloud-body').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target as HTMLFormElement;
+  const data = new FormData(form);
+  cloudMsg = '';
+  if (form.dataset.form === 'config') {
+    const url = String(data.get('url')).trim().replace(/\/+$/, '');
+    const key = String(data.get('key')).trim();
+    Object.assign(cloudDraft, { url, key });
+    const problem = validateConfig(url, key);
+    if (problem) {
+      cloudMsg = problem;
+      return renderCloud();
+    }
+    saveCloudConfig({ url, key });
+    await initCloud();
+    return renderCloud();
+  }
+  const email = String(data.get('email')).trim();
+  cloudDraft.email = email;
+  const password = String(data.get('password'));
+  cloudBusy = form.dataset.form === 'signin' ? 'Entrando…' : 'Criando…';
+  renderCloud();
+  try {
+    if (form.dataset.form === 'signin') await cloud.signIn(email, password);
+    else if (!(await cloud.signUp(email, password))) cloudMsg = 'Conta criada! Confirme pelo link que enviamos ao seu e-mail e depois entre.';
+  } catch (err) {
+    cloudMsg = err instanceof Error ? err.message : String(err);
+  }
+  cloudBusy = '';
+  renderCloud();
+});
+
+function cloudReconfigure() {
+  saveCloudConfig(null);
+  session = null;
+  cloudDetach(false);
+  renderCloud();
+  updateCloudChip();
+}
+
+async function refreshList() {
+  cloudListError = '';
+  try {
+    cloudList = await cloud.listScores();
+  } catch (err) {
+    cloudListError = err instanceof Error ? err.message : String(err);
+  }
+  if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+}
+
+async function cloudSaveNew() {
+  cloudBusy = 'Salvando…';
+  renderCloud();
+  try {
+    const doc = await cloud.createScore(editor.score);
+    setCloudDoc(doc);
+    await startLive();
+    toast('Partitura salva na nuvem');
+    void refreshList();
+  } catch (err) {
+    cloudMsg = err instanceof Error ? err.message : String(err);
+  }
+  cloudBusy = '';
+  renderCloud();
+}
+
+async function cloudOpen(id: string) {
+  try {
+    const r = await cloud.loadScore(id);
+    const role = await cloud.roleFor(id, r.ownerId);
+    cloudDetach(false);
+    editor.load(migrateScore(r.score));
+    setCloudDoc({ id, version: r.version, role });
+    await startLive();
+    closeOverlays();
+    toast(role === 'view' ? `Aberta só para ver: ${r.title}` : `Aberta: ${r.title}`);
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function cloudDelete(id: string, title: string) {
+  if (!confirm(`Apagar "${title}" da nuvem? Quem tem o link também perde o acesso. Não dá para desfazer.`)) return;
+  try {
+    await cloud.deleteScore(id);
+    if (cloudDoc?.id === id) cloudDetach(false);
+    toast('Apagada da nuvem (a cópia aberta aqui continua)');
+    void refreshList();
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function cloudShare(role: 'view' | 'edit') {
+  if (!cloudDoc) return;
+  try {
+    lastShareUrl = await cloud.createShareLink(cloudDoc.id, role);
+    try {
+      await navigator.clipboard.writeText(lastShareUrl);
+      toast(role === 'edit' ? 'Link para editar copiado' : 'Link para ver copiado');
+    } catch {
+      toast('Copie o link abaixo');
+    }
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+  renderCloud();
+  const input = app.querySelector<HTMLInputElement>('.share-url input');
+  input?.select();
+}
+
+async function cloudRevoke() {
+  if (!cloudDoc) return;
+  try {
+    await cloud.revokeShareLinks(cloudDoc.id);
+    lastShareUrl = '';
+    toast('Links desativados. Quem já entrou continua com acesso.');
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+  renderCloud();
+}
+
+function cloudDetach(notify: boolean) {
+  stopLive?.();
+  stopLive = null;
+  people = [];
+  clearTimeout(saveTimerCloud);
+  dirty = false;
+  saveError = '';
+  lastShareUrl = '';
+  warnedViewOnly = false;
+  if (cloudDoc && notify) toast('Esta cópia não sincroniza mais com a nuvem');
+  setCloudDoc(null);
+  if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+}
+
+async function cloudSignOut() {
+  cloudDetach(false);
+  await cloud.signOut();
+  session = null;
+  cloudList = null;
+  renderCloud();
+  updateCloudChip();
+}
+
+function scheduleCloudSave() {
+  if (!cloudDoc || !session) return;
+  if (cloudDoc.role === 'view') {
+    if (!warnedViewOnly) toast('Você só pode ver esta partitura: as mudanças ficam só neste navegador.');
+    warnedViewOnly = true;
+    return;
+  }
+  dirty = true;
+  updateCloudChip();
+  clearTimeout(saveTimerCloud);
+  saveTimerCloud = window.setTimeout(() => void cloudSaveNow(), 1500);
+}
+
+async function cloudSaveNow() {
+  if (!cloudDoc || saving) return;
+  saving = true;
+  dirty = false;
+  updateCloudChip();
+  const doc = cloudDoc;
+  try {
+    const version = await cloud.saveScore(doc, editor.score);
+    if (cloudDoc === doc) setCloudDoc({ ...doc, version });
+    saveError = '';
+  } catch (err) {
+    if (err instanceof cloud.ConflictError) {
+      // alguém salvou no meio: fica a versão da nuvem; Ctrl+Z volta para a sua
+      try {
+        const r = await cloud.loadScore(doc.id);
+        editor.replaceScore(migrateScore(r.score));
+        setCloudDoc({ ...doc, version: r.version });
+        toast('Outra pessoa salvou ao mesmo tempo. Carreguei a versão dela; Ctrl+Z traz a sua de volta.');
+        saveError = '';
+      } catch (e2) {
+        saveError = e2 instanceof Error ? e2.message : String(e2);
+      }
+    } else {
+      saveError = err instanceof Error ? err.message : String(err);
+      dirty = true;
+    }
+  }
+  saving = false;
+  updateCloudChip();
+  if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+  if (dirty && !saveError) scheduleCloudSave();
+}
+
+async function startLive() {
+  stopLive?.();
+  stopLive = null;
+  if (!cloudDoc || !session) return;
+  const me = session.user.email?.split('@')[0] ?? 'alguém';
+  const docId = cloudDoc.id;
+  try {
+    stopLive = await cloud.joinLive(docId, me, {
+      onRemote(row) {
+        if (!cloudDoc || cloudDoc.id !== docId || row.version <= cloudDoc.version) return;
+        if (dirty || saving) return; // o próximo salvamento resolve (conflito)
+        editor.replaceScore(migrateScore(row.data));
+        setCloudDoc({ ...cloudDoc, version: row.version });
+        toast('Atualizada por outra pessoa');
+      },
+      onPresence(list) {
+        people = list;
+        updateCloudChip();
+        if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+      },
+    });
+  } catch {
+    /* sem tempo real: continua salvando normalmente */
+  }
+}
+
+/** Abre a partitura de um link #s=... (depois de entrar na conta). */
+async function openPendingLink() {
+  if (!pendingLink || !session) return;
+  const link = pendingLink;
+  pendingLink = null;
+  history.replaceState(null, '', location.pathname + location.search);
+  try {
+    await cloud.joinByLink(link);
+    await cloudOpen(link.scoreId);
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function initCloud() {
+  pendingLink = cloud.parseShareHash(location.hash) ?? pendingLink;
+  updateCloudChip();
+  if (!cloudConfig()) {
+    if (pendingLink) {
+      cloudMsg = 'Este link é de uma partitura na nuvem, mas este Music Wiss ainda não está ligado a um projeto.';
+      openCloud();
+    }
+    return;
+  }
+  try {
+    session = await cloud.getSession();
+  } catch {
+    session = null;
+  }
+  await cloud.onAuthChange((s) => {
+    const changed = (s?.user.id ?? null) !== (session?.user.id ?? null);
+    session = s;
+    if (!changed) return;
+    cloudList = null;
+    updateCloudChip();
+    if (s) {
+      void refreshList();
+      void openPendingLink();
+      if (cloudDoc) void startLive();
+    } else {
+      stopLive?.();
+    }
+    if (!$('[data-overlay="cloud"]').hidden) renderCloud();
+  });
+  updateCloudChip();
+  if (pendingLink) {
+    if (session) await openPendingLink();
+    else openCloud();
+  } else if (session && cloudDoc) {
+    // volta a sincronizar a partitura que estava aberta; pega a versão nova se houver
+    try {
+      const r = await cloud.loadScore(cloudDoc.id);
+      if (r.version > cloudDoc.version) {
+        editor.replaceScore(migrateScore(r.score));
+        setCloudDoc({ ...cloudDoc, version: r.version });
+      }
+      await startLive();
+    } catch {
+      cloudDetach(false);
+    }
+  }
+}
+window.addEventListener('hashchange', () => {
+  const link = cloud.parseShareHash(location.hash);
+  if (!link) return;
+  pendingLink = link;
+  if (session) void openPendingLink();
+  else openCloud();
+});
+
+// ---------------------------------------------------------------- assistente (IA)
+
+let aiBusy = false;
+let aiAnswer: AssistantAnswer | null = null;
+let aiError = '';
+let aiTask: 'harmonizar' | 'revisar' = 'harmonizar';
+let aiStyle = '';
+
+function openAssistant() {
+  renderAssistant();
+  openOverlay('assistant');
+}
+
+function renderAssistant() {
+  const body = $('.assistant-body');
+  if (!cloudConfig() || !session) {
+    body.innerHTML = `<p>O assistente usa IA no servidor e precisa que você esteja conectado à nuvem.</p>
+      <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="cloud">Abrir Nuvem</button></div>`;
+    return;
+  }
+  const part = editor.score.parts[editor.pos.partIndex];
+  const where = `${part.name}${part.staves.length > 1 ? `, pauta ${editor.pos.staffIndex + 1}` : ''}, voz ${editor.pos.voiceIndex + 1}`;
+  const a = aiAnswer;
+  body.innerHTML = `
+    <form class="cloud-form" data-form="ai">
+      <div class="cloud-tabs" role="radiogroup">
+        <label class="${aiTask === 'harmonizar' ? 'on' : ''}"><input type="radio" name="task" value="harmonizar" ${aiTask === 'harmonizar' ? 'checked' : ''} />Harmonizar</label>
+        <label class="${aiTask === 'revisar' ? 'on' : ''}"><input type="radio" name="task" value="revisar" ${aiTask === 'revisar' ? 'checked' : ''} />Revisar</label>
+      </div>
+      <p class="sound-note">${aiTask === 'harmonizar' ? `Sugere cifras para a melodia em <b>${escapeHtml(where)}</b>. Você vê antes e decide se aplica.` : 'Procura notas fora da extensão, saltos difíceis, compassos incompletos e grafias estranhas.'}</p>
+      ${aiTask === 'harmonizar' ? `<label>Estilo (opcional)<input name="style" value="${escapeHtml(aiStyle)}" placeholder="ex.: bossa nova, hino, pop simples" /></label>` : ''}
+      <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="ai-run" ${aiBusy ? 'disabled' : ''}>${aiBusy ? 'Pensando…' : 'Pedir ao assistente'}</button></div>
+    </form>
+    ${aiError ? `<p class="cloud-msg">${escapeHtml(aiError)}</p>` : ''}
+    ${a ? `<section class="ai-answer">
+      <p>${escapeHtml(a.summary)}</p>
+      ${a.chords.length ? `<p class="ai-chords">${a.chords.map((c) => `<span>#${c.index} <b>${escapeHtml(c.symbol)}</b></span>`).join('')}</p>
+        <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="ai-apply">Aplicar ${a.chords.length} cifras</button></div>` : ''}
+      ${a.issues.length ? `<ul class="ai-issues">${a.issues.map((i) => `<li><b>Compasso ${i.measure}</b> ${escapeHtml(i.message)}</li>`).join('')}</ul>` : ''}
+    </section>` : ''}`;
+}
+
+$('.assistant-body').addEventListener('change', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.name === 'task') {
+    aiTask = el.value as 'harmonizar' | 'revisar';
+    aiAnswer = null;
+    renderAssistant();
+  } else if (el.name === 'style') aiStyle = el.value;
+});
+$('.assistant-body').addEventListener('submit', (e) => {
+  e.preventDefault();
+  void runAssistant();
+});
+
+async function runAssistant() {
+  const styleInput = app.querySelector<HTMLInputElement>('.assistant-body [name="style"]');
+  if (styleInput) aiStyle = styleInput.value;
+  aiBusy = true;
+  aiError = '';
+  aiAnswer = null;
+  renderAssistant();
+  try {
+    aiAnswer = await cloud.askAssistant(aiTask, describeForAssistant(editor.score, editor.pos), aiStyle);
+  } catch (err) {
+    aiError = err instanceof Error ? err.message : String(err);
+  }
+  aiBusy = false;
+  renderAssistant();
+}
+
+function applyAssistant() {
+  if (!aiAnswer?.chords.length) return;
+  const n = editor.events().length;
+  const valid = aiAnswer.chords.filter((c) => Number.isInteger(c.index) && c.index >= 0 && c.index < n && c.symbol.trim());
+  editor.setTexts('chordSymbol', valid.map((c) => [c.index, c.symbol.trim().slice(0, 24)]));
+  toast(`${valid.length} cifras aplicadas (Ctrl+Z desfaz)`);
+  closeOverlays();
+}
+
 // ---------------------------------------------------------------- início
 
 let savedTheme: string | null = null;
@@ -1184,3 +1728,4 @@ updatePlayButton();
 // espera a fonte SMuFL carregar antes do primeiro desenho
 document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light'));
 applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');
+void initCloud();

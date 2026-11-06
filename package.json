@@ -10,6 +10,7 @@
     "typecheck": "tsc -p ."
   },
   "dependencies": {
+    "@supabase/supabase-js": "2.118.0",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
     "vexflow": "^5.0.0"

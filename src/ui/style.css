@@ -950,3 +950,51 @@ select {
 .text-entry[data-kind='chordSymbol'] {
   font-weight: 700;
 }
+
+/* ---------- nuvem e assistente ---------- */
+.cloud-btn { position: relative; }
+.cloud-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.cloud-dot[hidden] { display: none; }
+.cloud-dot.ok { background: #3f9b5b; }
+.cloud-dot.busy { background: #d9a227; }
+.cloud-dot.error { background: var(--accent); }
+.cloud-body, .assistant-body { display: grid; gap: 14px; max-width: 520px; }
+.cloud-body h3 { margin: 4px 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.cloud-body p, .assistant-body p { margin: 0; line-height: 1.45; }
+.cloud-form { display: grid; gap: 10px; }
+.cloud-form label, .share-url { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.cloud-form input:not([type="radio"]), .share-url input {
+  font: inherit; color: inherit; background: transparent; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; min-width: 0;
+}
+.cloud-form input:focus-visible, .share-url input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.cloud-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.cloud-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); }
+.cloud-tabs > button, .cloud-tabs > label {
+  font: inherit; color: var(--muted); background: none; border: 0; padding: 6px 10px; cursor: pointer;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.cloud-tabs > .on { color: inherit; border-bottom-color: var(--accent); }
+.cloud-tabs input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
+.cloud-tabs label:has(input:focus-visible) { outline: 2px solid var(--accent); }
+.link-btn { font: inherit; font-size: 13px; background: none; border: 0; padding: 4px 2px; color: var(--muted); text-decoration: underline; cursor: pointer; }
+.link-btn:hover { color: inherit; }
+.link-btn.danger:hover { color: var(--accent); }
+.cloud-msg { padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+.cloud-msg.info { background: color-mix(in srgb, var(--line) 60%, transparent); }
+.cloud-user { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.cloud-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.cloud-list li {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 2px 8px; align-items: center;
+  padding: 6px 8px; border-radius: 8px;
+}
+.cloud-list li.current { background: var(--accent-soft); }
+.cloud-list .cloud-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-list small { grid-column: 1; grid-row: 2; color: var(--muted); }
+.cloud-list li > button { grid-row: 1 / span 2; }
+.warn { color: var(--accent); }
+.ai-answer { display: grid; gap: 10px; border-top: 1px solid var(--line); padding-top: 12px; }
+.ai-chords { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-chords span { border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-size: 13px; color: var(--muted); }
+.ai-chords b { color: var(--fg, inherit); }
+.ai-issues { margin: 0; padding-left: 18px; display: grid; gap: 6px; }

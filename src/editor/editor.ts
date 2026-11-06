@@ -13,6 +13,8 @@ import { cloneNotes, logicalLength, normalizeMeasures, padTo, readLogical, reflo
 export type EditorListener = (change: EditorChange) => void;
 
 export interface EditorChange {
+  /** a mudança veio de outra pessoa (colaboração): não salvar de volta na nuvem */
+  remote?: boolean;
   /** Notas que devem soar como retorno ao usuário (inserção ou mudança de altura). */
   sounded?: Pitch[];
 }
@@ -613,7 +615,7 @@ export class Editor {
     return Math.min(this.measureAt(t), this.staff.measures.length - 1);
   }
 
-  private changeMarks(indices: number[], fn: (m: Marks, ev: LogicalEvent) => void): void {
+  private changeMarks(indices: number[], fn: (m: Marks, ev: LogicalEvent, index: number) => void): void {
     const events = this.events();
     const valid = indices.filter((i) => events[i]);
     if (!valid.length) return;
@@ -621,7 +623,7 @@ export class Editor {
     for (const i of valid) {
       const ev = events[i];
       const m = cloneMarks(ev.marks) ?? {};
-      fn(m, ev);
+      fn(m, ev, i);
       ev.marks = tidyMarks(m);
       if (!ev.marks) delete ev.marks;
     }
@@ -666,6 +668,29 @@ export class Editor {
     this.changeMarks([index], (m) => {
       m[kind] = value;
     });
+  }
+
+  /** Vários textos de uma vez (ex.: cifras sugeridas pelo assistente), num só passo de desfazer. */
+  setTexts(kind: 'lyric' | 'chordSymbol', values: Array<[number, string]>): void {
+    const map = new Map(values);
+    this.changeMarks([...map.keys()], (m, _ev, i) => {
+      m[kind] = map.get(i);
+    });
+  }
+
+  /**
+   * Troca a partitura por outra versão (vinda da nuvem ou de um colaborador),
+   * mantendo a posição e permitindo desfazer para a versão local.
+   */
+  replaceScore(score: Score, change: EditorChange = { remote: true }): void {
+    this.snapshot();
+    this.score = score;
+    const part = Math.min(this.pos.partIndex, score.parts.length - 1);
+    const staff = Math.min(this.pos.staffIndex, score.parts[part].staves.length - 1);
+    this.pos = { partIndex: part, staffIndex: staff, voiceIndex: this.pos.voiceIndex };
+    this.anchor = null;
+    this.clampCursor();
+    this.emit(change);
   }
 
   /** Marca de repetição/casa no compasso da seleção (de novo a mesma = tirar). */

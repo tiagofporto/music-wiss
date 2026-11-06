@@ -80,6 +80,48 @@ O botão **Som** abre o painel de áudio:
 - **Instrumentos:** sem nada carregado, o editor toca com timbres sintetizados, um por família General MIDI (piano, órgão, cordas, metais, palhetas, flautas, coro, cordas dedilhadas…). Para som de instrumentos gravados, carregue um **SoundFont** (`.sf2` ou `.sf3`, como o GeneralUser GS ou o FluidR3_GM). O arquivo é lido no próprio navegador (zonas por nota e intensidade, afinação, laço, envelope, filtro e pan) e fica guardado para as próximas visitas.
 - **Teclado MIDI:** conecta pelo Web MIDI (Chrome, Edge, Opera). Cada tecla soa na hora com o instrumento atual e a intensidade tocada. No modo de escrita (`N`) a tecla vira nota com a figura escolhida; teclas apertadas juntas viram um acorde, e uma tecla somada enquanto o acorde ainda está seguro entra nele. A grafia segue a tonalidade (Fá# em Sol maior, Sol♭ em tons de bemol) e instrumentos transpositores recebem a nota escrita.
 
+## Nuvem, compartilhamento e assistente
+
+O botão **Nuvem** liga o editor a um projeto [Supabase](https://supabase.com):
+
+- **Conta** com e-mail e senha.
+- **Minhas partituras**: salvar na nuvem, abrir em outro computador, apagar.
+  Depois de salva, cada mudança é gravada sozinha (1,5 s depois da última edição).
+- **Compartilhar por link**: "Link para ver" ou "Link para editar". Quem abre o
+  link entra na conta e a partitura aparece em "Compartilhadas comigo".
+  "Desativar links" impede novas entradas.
+- **Tempo real**: quem está com a mesma partitura aberta vê as mudanças dos outros
+  e quantas pessoas estão online. Se duas pessoas salvam ao mesmo tempo, fica a
+  versão que chegou primeiro e a outra pessoa recebe um aviso; Ctrl+Z traz a
+  versão dela de volta.
+
+O botão **Assistente** (precisa estar conectado) usa IA no servidor:
+
+- **Harmonizar**: sugere cifras para a voz onde está o cursor, no estilo pedido.
+  Você vê a lista antes e aplica com um clique (Ctrl+Z desfaz tudo).
+- **Revisar**: aponta notas fora da extensão, saltos difíceis, compassos
+  incompletos e grafias estranhas.
+
+### Como ligar
+
+1. Crie um projeto no Supabase e rode `supabase/migrations/*.sql`
+   (`supabase db push` ou cole no SQL Editor). Isso cria as tabelas, as regras
+   de acesso (RLS) e liga o tempo real.
+2. Publique a função do assistente e guarde a chave da API da Anthropic
+   **só no servidor**:
+   ```
+   supabase functions deploy assistente
+   supabase secrets set ANTHROPIC_API_KEY=sk-ant-...
+   ```
+3. Copie `.env.example` para `.env.local` e preencha a URL e a chave
+   **publicável** do projeto. Sem isso, dá para colar as duas no próprio painel
+   Nuvem (ficam guardadas no navegador).
+
+O que fica no banco: `scores` (a partitura em JSON e um número de versão),
+`score_shares` (os links) e `score_members` (quem entrou por link e com que
+papel). Só o dono apaga a partitura e cria links; quem tem link de edição pode
+salvar; quem tem link de leitura só abre.
+
 ## Arquitetura
 
 ```
@@ -102,9 +144,14 @@ src/
               instrumento, timbres internos e leitor/tocador de SoundFont (SF2/SF3)
   input/      Teclado MIDI (Web MIDI, agrupamento de acordes)
   io/         MusicXML (exportar/importar, .mxl), MIDI e PDF
+  cloud/      Conta, partituras na nuvem, links e tempo real (Supabase, carregado sob demanda)
+  ai/         Resumo da partitura em texto para o assistente
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos
 ```
+
+Fora do `src/`: `supabase/migrations` (banco e regras de acesso) e
+`supabase/functions/assistente` (função que chama a IA).
 
 ### Decisões importantes
 
@@ -132,4 +179,4 @@ src/
 - Fase 2: ~~importar/exportar MusicXML, exportar MIDI e PDF~~ (feito); importar MIDI fica para depois.
 - Fase 3: ~~som com soundfonts (SF2/SF3), volumes por instrumento e entrada por teclado MIDI~~ (feito). Escrita em tempo real (tocando junto com o metrônomo) fica para depois.
 - Fase 4: ~~dinâmicas, articulações, letra, cifras e barras de repetição~~ (feito). Depois: crescendo/diminuendo, ligaduras de expressão, D.C./D.S./Coda e várias estrofes.
-- Fase 5: contas, nuvem, compartilhamento, colaboração e assistência com IA.
+- Fase 5: ~~contas, nuvem, compartilhamento, colaboração e assistente com IA~~ (feito). Depois: edição simultânea nota a nota (hoje a sincronização é da partitura inteira), histórico de versões e comentários.

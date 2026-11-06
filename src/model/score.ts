@@ -3,6 +3,7 @@ import type { Duration } from './duration';
 import { durationValue } from './duration';
 import type { Fifths } from './key';
 import type { Clef, Pitch } from './pitch';
+import type { Annotation } from '../annotate/annotations';
 
 /**
  * Modelo de dados hierárquico:
@@ -167,6 +168,8 @@ export interface Score {
   changes: MeasureChange[];
   /** Repetições e casas, ordenadas por compasso. */
   bars?: BarMark[];
+  /** Marcações à mão por cima da página (caneta, marca-texto, texto). */
+  annotations?: Annotation[];
   parts: Part[];
 }
 

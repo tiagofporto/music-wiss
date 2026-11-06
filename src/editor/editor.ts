@@ -1,3 +1,4 @@
+import type { Annotation } from '../annotate/annotations';
 import { Fraction } from '../model/fraction';
 import type { Duration, DurationType } from '../model/duration';
 import { DURATION_ORDER, durationValue } from '../model/duration';
@@ -17,6 +18,8 @@ export interface EditorChange {
   remote?: boolean;
   /** Notas que devem soar como retorno ao usuário (inserção ou mudança de altura). */
   sounded?: Pitch[];
+  /** Só mudaram as marcações à mão (não precisa redesenhar a partitura). */
+  annotations?: boolean;
 }
 
 /** Onde o cursor está: instrumento, pauta dentro do instrumento e voz. */
@@ -676,6 +679,14 @@ export class Editor {
     this.changeMarks([...map.keys()], (m, _ev, i) => {
       m[kind] = map.get(i);
     });
+  }
+
+  /** Marcações à mão por cima da partitura (um desfazer por traço). */
+  setAnnotations(list: Annotation[]): void {
+    this.snapshot();
+    if (list.length) this.score.annotations = list;
+    else delete this.score.annotations;
+    this.emit({ annotations: true });
   }
 
   /**

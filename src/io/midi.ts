@@ -1,7 +1,7 @@
 import { perform } from '../audio/sequencer';
 import { Fraction } from '../model/fraction';
 import type { Score } from '../model/score';
-import { effectiveTimeSignature } from '../model/score';
+import { effectiveKey, effectiveTimeSignature } from '../model/score';
 
 /** Resolução do arquivo: pulsos (ticks) por semínima. */
 export const TICKS_PER_QUARTER = 480;
@@ -56,12 +56,19 @@ export function exportMidi(score: Score): Uint8Array {
   const mpq = Math.round(60_000_000 / score.tempo);
   conductor.push({ tick: 0, order: 1, data: [0xff, 0x51, 0x03, (mpq >> 16) & 0xff, (mpq >> 8) & 0xff, mpq & 0xff] });
   let prev = '';
+  let prevKey: number | null = null;
   for (const m of measures.length ? measures : [{ measure: 0, played: Fraction.ZERO }]) {
     const ts = effectiveTimeSignature(score, m.measure);
     const key = `${ts.beats}/${ts.beatType}`;
     if (key !== prev) {
       conductor.push({ tick: toTicks(m.played), order: 2, data: [0xff, 0x58, 0x04, ts.beats, Math.log2(ts.beatType), 24, 8] });
       prev = key;
+    }
+    const fifths = effectiveKey(score, m.measure);
+    if (fifths !== prevKey) {
+      // armadura (maior): número de sustenidos (+) ou bemóis (-)
+      conductor.push({ tick: toTicks(m.played), order: 2, data: [0xff, 0x59, 0x02, fifths & 0xff, 0] });
+      prevKey = fifths;
     }
   }
 

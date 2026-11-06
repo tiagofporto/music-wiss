@@ -13,6 +13,7 @@
     "@supabase/supabase-js": "2.118.0",
     "fflate": "^0.8.3",
     "jspdf": "^4.2.1",
+    "pdfjs-dist": "6.4.299",
     "vexflow": "^5.0.0"
   },
   "devDependencies": {

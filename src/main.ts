@@ -1,11 +1,14 @@
 import './ui/style.css';
 import { Editor, TUPLET_NORMAL } from './editor/editor';
-import { WebAudioSynth } from './audio/synth';
+import { AudioEngine } from './audio/engine';
+import { connectMidi } from './input/midi-input';
+import type { MidiNote } from './input/midi-input';
+import { loadStoredSoundFont, storeSoundFont, forgetSoundFont } from './audio/soundfont-store';
 import { schedule } from './audio/sequencer';
 import { DURATION_NAMES_PT, DURATION_ORDER } from './model/duration';
 import type { Fifths } from './model/key';
 import { keyName } from './model/key';
-import { pitchLabel, toMidi } from './model/pitch';
+import { pitchLabel, spellMidi, toMidi } from './model/pitch';
 import type { Step } from './model/pitch';
 import type { Score } from './model/score';
 import { createScore, effectiveKey, effectiveTimeSignature, INSTRUMENTS, MAX_VOICES, migrateScore } from './model/score';
@@ -26,7 +29,10 @@ const THEME_KEY = 'music-wiss:theme';
 // ---------------------------------------------------------------- estado
 
 const editor = new Editor(loadSaved() ?? demoScore());
-const synth = new WebAudioSynth();
+const engine = new AudioEngine();
+let midiLink: { disconnect: () => void } | null = null;
+let midiDevices: string[] = [];
+let soundLoading: string | null = null;
 let lastRender: RenderResult | null = null;
 let playing: { timers: number[]; time: number | null } | null = null;
 
@@ -50,6 +56,7 @@ app.innerHTML = `
         <button data-act="export-midi"><span class="fmt">MID</span><span>Exportar MIDI</span><small>sequenciadores e DAWs</small></button>
       </div>
     </div>
+    <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
     <button class="icon-btn primary" data-act="play" title="Tocar (Espaço)"></button>
   </header>
@@ -106,7 +113,15 @@ app.innerHTML = `
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
+  <div class="overlay" data-overlay="sound" hidden>
+    <div class="panel dialog sound-panel">
+      <h2>Som</h2>
+      <div class="sound-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
   <div class="toast"></div>
+  <input type="file" accept=".sf2,.sf3" hidden data-soundfont />
   <input type="file" accept=".json,.musicxml,.xml,.mxl,application/json,application/xml" hidden data-file />
   <div class="drop-hint" hidden>Solte o arquivo para abrir</div>
 `;
@@ -215,9 +230,17 @@ function renderStatus() {
 
 function sound(pitches: { step: Step; alter: number; octave: number }[] | undefined) {
   if (!pitches?.length || playing) return;
-  const t = synth.now();
-  const transp = editor.score.parts[editor.pos.partIndex].transposition;
-  for (const p of pitches) synth.play(toMidi(p as never) + transp, t, 0.45, 0.7);
+  const t = engine.now();
+  const part = editor.score.parts[editor.pos.partIndex];
+  syncMixer();
+  for (const p of pitches) {
+    engine.play({ bus: part.id, program: part.midiProgram, midi: toMidi(p as never) + part.transposition, when: t, duration: 0.45, velocity: 90 });
+  }
+}
+
+/** Passa volume e mudo de cada instrumento para o motor de som. */
+function syncMixer() {
+  for (const part of editor.score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
 }
 
 function togglePlay() {
@@ -226,8 +249,12 @@ function togglePlay() {
   const from = atEnd ? Fraction.ZERO : editor.cursorTime();
   const { notes, steps, total } = schedule(editor.score, from);
   if (!notes.length) return toast('Nada para tocar ainda');
-  const t0 = synth.now() + 0.08;
-  for (const n of notes) synth.play(n.midi, t0 + n.start, n.duration * 0.95);
+  syncMixer();
+  const parts = editor.score.parts;
+  const t0 = engine.now() + 0.08;
+  for (const n of notes) {
+    engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * 0.95, velocity: n.velocity });
+  }
   const state = { timers: [] as number[], time: null as number | null };
   playing = state;
   for (const step of steps) {
@@ -246,7 +273,7 @@ function stopPlayback() {
   if (!playing) return;
   playing.timers.forEach((t) => clearTimeout(t));
   playing = null;
-  synth.stopAll();
+  engine.stopAll();
   updatePlayButton();
   render();
 }
@@ -364,6 +391,8 @@ function commands(): Command[] {
     { id: 'export-pdf', label: 'Exportar PDF', run: () => void exportPdfFile() },
     { id: 'export-xml', label: 'Exportar MusicXML', run: exportXml },
     { id: 'export-midi', label: 'Exportar MIDI', run: exportMid },
+    { id: 'sound', label: 'Som: volumes, SoundFont e teclado MIDI…', run: openSound },
+    { id: 'midi', label: midiLink ? 'Desconectar teclado MIDI' : 'Conectar teclado MIDI', run: () => void toggleMidi() },
     { id: 'theme', label: 'Alternar tema claro/escuro', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
     { id: 'help', label: 'Ver atalhos de teclado', hint: '?', run: () => openOverlay('help') },
     { id: 'undo', label: 'Desfazer', hint: 'Ctrl Z', run: () => editor.undo() },
@@ -619,8 +648,12 @@ type DurationKey = '1' | '2' | '3' | '4' | '5' | '6';
 
 // ---------------------------------------------------------------- eventos
 
+/** a próxima mudança já soou pelo teclado MIDI */
+let muteNextSound = false;
+
 editor.onChange((change) => {
-  sound(change.sounded);
+  if (muteNextSound) muteNextSound = false;
+  else sound(change.sounded);
   autosave();
   render();
 });
@@ -643,6 +676,11 @@ app.addEventListener('click', (e) => {
     case 'play': return togglePlay();
     case 'new': return openOverlay('new');
     case 'palette': return openPalette();
+    case 'sound': return openSound();
+    case 'load-sf': return $<HTMLInputElement>('[data-soundfont]').click();
+    case 'clear-sf': return clearSoundFont();
+    case 'midi': return void toggleMidi();
+    case 'mute': return toggleMute(Number(el.dataset.part));
     case 'theme': return applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
     case 'dot': return editor.toggleDot();
     case 'rest': return editor.inputMode ? editor.insertRest() : undefined;
@@ -779,3 +817,196 @@ updatePlayButton();
 // espera a fonte SMuFL carregar antes do primeiro desenho
 document.fonts.load('30px Bravura').finally(() => applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light'));
 applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'light');
+
+// ---------------------------------------------------------------- som: painel, SoundFont e MIDI
+
+function openSound() {
+  renderSound();
+  openOverlay('sound');
+}
+
+function renderSound() {
+  const body = $('.sound-body');
+  const sf = engine.soundFontName;
+  const master = Math.round(masterVolume * 100);
+  const parts = editor.score.parts.map((p, i) => {
+    const vol = Math.round((p.volume ?? 0.8) * 100);
+    return `<div class="mix-row ${p.muted ? 'muted' : ''}">
+      <span class="mix-name">${escapeHtml(p.name)}</span>
+      <input type="range" min="0" max="100" value="${vol}" data-part-vol="${i}" aria-label="Volume de ${escapeHtml(p.name)}" />
+      <span class="mix-val">${vol}</span>
+      <button type="button" class="icon-btn small ${p.muted ? 'on' : ''}" data-act="mute" data-part="${i}" aria-pressed="${!!p.muted}">${p.muted ? 'Sem som' : 'Mudo'}</button>
+    </div>`;
+  }).join('');
+  body.innerHTML = `
+    <section>
+      <h3>Volumes</h3>
+      <div class="mix-row master">
+        <span class="mix-name">Geral</span>
+        <input type="range" min="0" max="100" value="${master}" data-master aria-label="Volume geral" />
+        <span class="mix-val">${master}</span><span></span>
+      </div>
+      ${parts}
+    </section>
+    <section>
+      <h3>Instrumentos</h3>
+      <p class="sound-src">${soundLoading ? `Carregando <b>${escapeHtml(soundLoading)}</b>…` : sf ? `Tocando com o SoundFont <b>${escapeHtml(sf)}</b>.` : 'Tocando com os <b>timbres internos</b> (sintetizados, um por família de instrumento).'}</p>
+      <p class="sound-note">Para som de instrumentos gravados, carregue um arquivo SoundFont (.sf2 ou .sf3), por exemplo o GeneralUser GS ou o FluidR3_GM, gratuitos. Ele fica guardado neste navegador.</p>
+      <div class="sound-actions">
+        <button type="button" class="icon-btn" data-act="load-sf">${ICON.upload}<span>Carregar SoundFont…</span></button>
+        ${sf ? '<button type="button" class="icon-btn" data-act="clear-sf"><span>Voltar aos timbres internos</span></button>' : ''}
+      </div>
+    </section>
+    <section>
+      <h3>Teclado MIDI</h3>
+      <p class="sound-src">${midiLink ? (midiDevices.length ? `Conectado: <b>${midiDevices.map(escapeHtml).join(', ')}</b>.` : 'Esperando um teclado. Ligue o cabo USB.') : 'Desconectado.'}</p>
+      <p class="sound-note">No modo de escrita (N), cada tecla vira uma nota com a figura escolhida; teclas apertadas juntas viram acorde. Fora do modo de escrita, o teclado só toca.</p>
+      <div class="sound-actions">
+        <button type="button" class="icon-btn ${midiLink ? '' : 'primary'}" data-act="midi">${ICON.keyboard}<span>${midiLink ? 'Desconectar' : 'Conectar teclado MIDI'}</span></button>
+      </div>
+    </section>
+  `;
+}
+
+function escapeHtml(s: string) {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
+}
+
+const MASTER_KEY = 'music-wiss:volume';
+let masterVolume = Number(safeGet(MASTER_KEY) ?? 0.8);
+if (!Number.isFinite(masterVolume)) masterVolume = 0.8;
+engine.setMasterVolume(masterVolume);
+
+function safeGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+$('.sound-body').addEventListener('input', (e) => {
+  const el = e.target as HTMLInputElement;
+  const v = Number(el.value) / 100;
+  const label = el.nextElementSibling as HTMLElement | null;
+  if (label) label.textContent = el.value;
+  if (el.dataset.master !== undefined) {
+    masterVolume = v;
+    engine.setMasterVolume(v);
+    safeSet(MASTER_KEY, String(v));
+  } else if (el.dataset.partVol !== undefined) {
+    const part = editor.score.parts[Number(el.dataset.partVol)];
+    if (!part) return;
+    part.volume = v;
+    engine.setBus(part.id, v, part.muted);
+  }
+});
+// grava o volume do instrumento (com desfazer) só ao soltar o controle
+$('.sound-body').addEventListener('change', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.dataset.partVol === undefined) return;
+  const i = Number(el.dataset.partVol);
+  const v = Number(el.value) / 100;
+  editor.mutate((s) => (s.parts[i].volume = v));
+  renderSound();
+});
+
+function toggleMute(i: number) {
+  if (!editor.score.parts[i]) return;
+  editor.mutate((s) => (s.parts[i].muted = !s.parts[i].muted));
+  syncMixer();
+  renderSound();
+}
+
+async function useSoundFont(bytes: Uint8Array, name: string, store: boolean) {
+  soundLoading = name;
+  renderSound();
+  try {
+    const loaded = await engine.loadSoundFont(bytes, name, editor.score.parts.map((p) => p.midiProgram));
+    if (store) void storeSoundFont(name, bytes);
+    toast(`SoundFont carregado: ${loaded}`);
+  } catch (err) {
+    toast(err instanceof Error ? err.message : 'Não deu para ler o SoundFont');
+  } finally {
+    soundLoading = null;
+    renderSound();
+  }
+}
+
+function clearSoundFont() {
+  engine.clearSoundFont();
+  void forgetSoundFont();
+  toast('Voltando aos timbres internos');
+  renderSound();
+}
+
+$<HTMLInputElement>('[data-soundfont]').addEventListener('change', async (e) => {
+  const input = e.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = '';
+  if (file) await useSoundFont(new Uint8Array(await file.arrayBuffer()), file.name, true);
+});
+
+// SoundFont guardado de uma visita anterior (carrega quando o usuário tocar algo pela primeira vez,
+// porque o navegador só libera o áudio depois de um clique ou tecla)
+let storedSoundFontPending = true;
+async function restoreSoundFont() {
+  if (!storedSoundFontPending) return;
+  storedSoundFontPending = false;
+  const stored = await loadStoredSoundFont();
+  if (stored && !engine.soundFontName) await useSoundFont(stored.bytes, stored.name, false);
+}
+window.addEventListener('pointerdown', () => void restoreSoundFont(), { once: true });
+window.addEventListener('keydown', () => void restoreSoundFont(), { once: true });
+
+async function toggleMidi() {
+  if (midiLink) {
+    midiLink.disconnect();
+    midiLink = null;
+    updateMidiLed();
+    renderSound();
+    return;
+  }
+  const result = await connectMidi({
+    onNoteOn: (n) => midiSound(n),
+    onChord: (notes, late) => midiWrite(notes, late),
+    onDevices: (names) => {
+      midiDevices = names;
+      updateMidiLed();
+      if (!$('[data-overlay="sound"]').hidden) renderSound();
+    },
+  });
+  if (result.error) {
+    toast(result.error);
+    return;
+  }
+  midiLink = result;
+  toast(midiDevices.length ? `Teclado MIDI conectado: ${midiDevices[0]}` : 'MIDI ligado. Conecte um teclado.');
+  updateMidiLed();
+  renderSound();
+}
+
+function updateMidiLed() {
+  const led = $('.midi-led');
+  led.hidden = !midiLink;
+  led.classList.toggle('live', midiDevices.length > 0);
+}
+
+/** Toca a tecla na hora, com o som do instrumento atual. */
+function midiSound(n: MidiNote) {
+  const part = editor.score.parts[editor.pos.partIndex];
+  syncMixer();
+  engine.play({ bus: part.id, program: part.midiProgram, midi: n.midi, when: engine.now(), duration: 0.6, velocity: n.velocity });
+}
+
+/** No modo de escrita, escreve a nota/acorde (convertendo do som real para o escrito). */
+function midiWrite(notes: MidiNote[], late: boolean) {
+  if (!editor.inputMode || playing || anyOverlayOpen()) return;
+  const part = editor.score.parts[editor.pos.partIndex];
+  const fifths = effectiveKey(editor.score, editor.cursorMeasure());
+  const pitches = notes.map((n) => spellMidi(n.midi - part.transposition, fifths));
+  muteNextSound = true;
+  if (late) editor.addPitchesToPrevious(pitches);
+  else editor.insertChord(pitches);
+  muteNextSound = false;
+}

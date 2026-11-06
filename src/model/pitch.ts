@@ -115,3 +115,34 @@ export function pitchesEqual(a: Pitch, b: Pitch): boolean {
 export function midiToFrequency(midi: number): number {
   return 440 * Math.pow(2, (midi - 69) / 12);
 }
+
+const SHARP_SPELLING: Array<[Step, Alter]> = [['C', 0], ['C', 1], ['D', 0], ['D', 1], ['E', 0], ['F', 0], ['F', 1], ['G', 0], ['G', 1], ['A', 0], ['A', 1], ['B', 0]];
+const FLAT_SPELLING: Array<[Step, Alter]> = [['C', 0], ['D', -1], ['D', 0], ['E', -1], ['E', 0], ['F', 0], ['G', -1], ['G', 0], ['A', -1], ['A', 0], ['B', -1], ['B', 0]];
+
+/**
+ * Escreve um número MIDI como nota, de acordo com a tonalidade (armadura em quintas):
+ * usa primeiro as notas da escala (Fá# em Sol maior, Si♭ em Fá maior) e, fora dela,
+ * sustenidos em tons de sustenido e bemóis em tons de bemol.
+ */
+export function spellMidi(midi: number, fifths = 0): Pitch {
+  const pc = ((midi % 12) + 12) % 12;
+  const sharps = ['F', 'C', 'G', 'D', 'A', 'E', 'B'];
+  const flats = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+  // notas da escala nesta tonalidade
+  for (const step of STEPS) {
+    let alter = 0;
+    if (fifths > 0 && sharps.indexOf(step) < fifths) alter = 1;
+    if (fifths < 0 && flats.indexOf(step) < -fifths) alter = -1;
+    if ((STEP_SEMITONES[step] + alter + 12) % 12 === pc) {
+      return withOctave(step, alter as Alter, midi);
+    }
+  }
+  const [step, alter] = (fifths < 0 ? FLAT_SPELLING : SHARP_SPELLING)[pc];
+  return withOctave(step, alter, midi);
+}
+
+function withOctave(step: Step, alter: Alter, midi: number): Pitch {
+  // a oitava segue a letra (Si# 3 soa como Dó 4; Dó♭ 5 soa como Si 4)
+  const octave = Math.floor((midi - STEP_SEMITONES[step] - alter) / 12) - 1;
+  return { step, alter, octave };
+}

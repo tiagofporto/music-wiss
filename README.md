@@ -123,6 +123,23 @@ O botão **Som** abre o painel de áudio:
   partitura transcrita abre editável e toca. Compassos que não fecham são
   completados com pausas e avisados.
 
+## Aba Editar (PDF e fotos)
+
+No topo ficam três abas: **Escrever** (o editor de notas), **Editar** e
+**Tocar**. A aba **Editar** (Ctrl+Shift+E) é onde se trabalha em cima de uma
+partitura que já existe em PDF ou foto:
+
+- **Carregar PDF ou foto** (clicar, arrastar ou Ctrl+O). Um PDF aberto pelo
+  menu Arquivo em Escrever também vem para cá.
+- Marcar com caneta, marca-texto, texto, selos e borracha; mover e corrigir
+  depois; a barra pode ficar no topo, nos lados ou embaixo.
+- **Ler e analisar com IA** transforma as notas em partitura editável, que
+  abre em Escrever.
+- **Baixar com marcações** gera o PDF marcado.
+- **Fechar documento** volta para a lista **Seus documentos**, com abrir e
+  apagar. Trocar de aba e voltar reabre o documento onde você parou, e
+  recarregar a página também.
+
 ## Aba Tocar (palco)
 
 No topo há duas abas: **Escrever** (o editor) e **Tocar**, para ler e tocar

@@ -1385,3 +1385,35 @@ select {
   .topbar .spacer { display: none; }
   .perform-bar { position: static; }
 }
+
+/* ---------- aba Editar (PDF e fotos) ---------- */
+.edit-mode .topbar > :is([data-act="new"], [data-act="library"], .menu, .mark-btn, [data-act="assistant"], [data-act="play"]),
+.edit-mode .dock, .edit-mode .status, .edit-mode .expr-panel, .edit-mode .empty-hint { display: none !important; }
+.edit-home { width: min(860px, 100%); margin: 8px auto 0; }
+.edit-hero { padding: 36px 40px 30px; background: var(--paper); border: 1px solid var(--paper-edge); border-radius: 14px; box-shadow: var(--shadow); }
+.edit-hero h1 { margin: 0 0 8px; font-family: var(--font-title); font-size: 30px; font-weight: 600; letter-spacing: -0.01em; }
+.edit-hero > p { margin: 0 0 22px; max-width: 62ch; color: var(--ink-soft); line-height: 1.55; }
+.edit-drop {
+  width: 100%;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 34px 20px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.edit-drop svg { width: 30px; height: 30px; color: var(--accent); }
+.edit-drop strong { font-size: 17px; }
+.edit-drop span { color: var(--muted); font-size: 13px; }
+.edit-drop:hover { background: var(--accent-soft); border-color: var(--accent); }
+.edit-drop:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.edit-tips { list-style: none; margin: 20px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.edit-tips li { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--ink-soft); line-height: 1.4; }
+.edit-tips svg { flex: none; width: 18px; height: 18px; color: var(--accent); margin-top: 1px; }
+.edit-tips b { color: var(--ink); display: block; }
+.edit-recent { margin-top: 18px; padding: 4px 8px; }
+@media (max-width: 760px) { .edit-hero { padding: 24px 18px; } .edit-hero h1 { font-size: 24px; } }

@@ -62,6 +62,7 @@ export const SHORTCUTS: Array<[string, string]> = [
   ['Backspace', 'Apaga a nota antes do cursor'],
   ['Espaço', 'Ouve / para'],
   ['Ctrl + Shift + O', 'Minhas partituras: ver, abrir e apagar'],
+  ['Ctrl + Shift + E', 'Aba Editar: PDF e fotos com marcações'],
   ['Ctrl + Shift + P', 'Alterna entre as abas Escrever e Tocar'],
   ['Tocar: F', 'Tela cheia (Esc sai)'],
   ['Tocar: + / − / 0', 'Aumenta, diminui, ajusta à largura (ou Ctrl + roda do mouse)'],

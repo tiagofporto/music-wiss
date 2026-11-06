@@ -61,7 +61,7 @@ let playingStage = false;
 const APP_VERSION = '0.1.0';
 
 // aba Tocar
-type Tab = 'write' | 'perform';
+type Tab = 'write' | 'edit' | 'perform';
 const TAB_KEY = 'music-wiss:tab';
 const ZOOM_KEY = 'music-wiss:perform-zoom';
 const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2, 2.5, 3];
@@ -87,6 +87,7 @@ app.innerHTML = `
     <div class="brand"><img src="/favicon.svg" alt="" /><span>Music Wiss</span></div>
     <div class="tabs" role="tablist" aria-label="Modo">
       <button class="tab on" role="tab" aria-selected="true" data-act="tab" data-tab="write" title="Escrever e editar a partitura">${ICON.pen}<span>Escrever</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="edit" title="Editar PDF e fotos: marcar, selos, ler com IA (Ctrl+Shift+E)">${ICON.doc}<span>Editar</span></button>
       <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="perform" title="Tocar: partitura limpa, tela cheia e eventos (Ctrl+Shift+P)">${ICON.music}<span>Tocar</span></button>
     </div>
     <div class="spacer"></div>
@@ -131,13 +132,31 @@ app.innerHTML = `
         Veja todos os atalhos com <span class="kbd">?</span>.
       </div>
     </article>
+    <section class="edit-home" hidden aria-label="Editar PDF e fotos">
+      <div class="edit-hero">
+        <h1>Editar PDF e fotos</h1>
+        <p>Carregue a partitura que você já tem e trabalhe em cima dela: marque com caneta e marca-texto, escreva, cole selos, apague, e baixe o PDF marcado. A IA também lê as notas e transforma em partitura editável.</p>
+        <button type="button" class="edit-drop" data-act="edit-load">
+          ${ICON.upload}
+          <strong>Carregar PDF ou foto</strong>
+          <span>Clique ou arraste o arquivo para cá · PDF, JPG, PNG</span>
+        </button>
+        <ul class="edit-tips">
+          <li>${ICON.pen}<span><b>Marcar</b> caneta, marca-texto, texto e selos</span></li>
+          <li>${ICON.move}<span><b>Mover</b> e corrigir marcações depois</span></li>
+          <li>${ICON.sparkle}<span><b>Ler com IA</b> vira partitura que toca</span></li>
+          <li>${ICON.download}<span><b>Baixar</b> o PDF com as marcações</span></li>
+        </ul>
+      </div>
+      <div class="edit-recent"></div>
+    </section>
     <section class="doc-view" hidden aria-label="Documento">
       <div class="doc-head">
         <div class="doc-name"></div>
         <div class="doc-actions">
           <button class="icon-btn" data-act="doc-analyze">${ICON.sparkle}<span>Ler e analisar com IA</span></button>
           <button class="icon-btn" data-act="doc-export">${ICON.download}<span>Baixar com marcações</span></button>
-          <button class="icon-btn" data-act="doc-close">Voltar à partitura</button>
+          <button class="icon-btn" data-act="doc-close" title="Fechar e voltar para a lista de documentos">Fechar documento</button>
         </div>
       </div>
       <div class="doc-pages"></div>
@@ -162,7 +181,7 @@ app.innerHTML = `
           <button class="icon-btn" data-act="events" title="Eventos: repertórios salvos (E)">${ICON.list}<span>Eventos</span></button>
           <button class="icon-btn wa" data-act="share-wa" title="Enviar o PDF pelo WhatsApp">${ICON.whatsapp}<span>WhatsApp</span></button>
           <button class="icon-btn" data-act="stage-mine" hidden title="Voltar para a partitura que está em Escrever">${ICON.music}<span>Minha partitura</span></button>
-          <button class="icon-btn" data-act="stage-edit" hidden title="Abrir esta partitura na aba Escrever">${ICON.pen}<span>Editar</span></button>
+          <button class="icon-btn" data-act="stage-edit" hidden title="Abrir para editar (partitura em Escrever, PDF/foto em Editar)">${ICON.pen}<span>Editar</span></button>
           <button class="icon-btn" data-act="feedback" title="Mandar uma sugestão" aria-label="Sugestão">${ICON.chat}</button>
           <button class="icon-btn primary" data-act="immersive" title="Tela cheia: esconde tudo menos a partitura (F)">${ICON.expand}<span>Tela cheia</span></button>
         </div>
@@ -477,7 +496,18 @@ function onKey(e: KeyboardEvent) {
     return setTab(tab === 'perform' ? 'write' : 'perform');
   }
   if (typing || anyOverlayOpen()) return;
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'e') {
+    e.preventDefault();
+    return setTab(tab === 'edit' ? 'write' : 'edit');
+  }
   if (tab === 'perform') return onPerformKey(e, mod);
+  if (tab === 'edit' && !docView) {
+    if (mod && e.key.toLowerCase() === 'o') {
+      e.preventDefault();
+      $<HTMLInputElement>('[data-file]').click();
+    }
+    return;
+  }
   if (docView) return onDocKey(e, mod);
   if (e.key.toLowerCase() === 'm' && !mod && !e.altKey) {
     e.preventDefault();
@@ -974,10 +1004,11 @@ app.addEventListener('click', (e) => {
     case 'annot-size': return annotResize(Number(el.dataset.f));
     case 'annot-delete': return annotDelete();
     case 'annot-done': return docView ? closeDocView() : toggleMarking(false);
-    case 'docs': closeMenu(); return void openRecentDocs();
+    case 'docs': closeMenu(); return setTab('edit');
     case 'doc-open': return void reopenDoc(el.dataset.id!);
     case 'doc-forget': return void forgetDoc(el.dataset.id!);
-    case 'doc-close': return closeDocView();
+    case 'doc-close': closeDocView(); return renderEditHome();
+    case 'edit-load': return $<HTMLInputElement>('[data-file]').click();
     case 'doc-show': return showDocView();
     case 'doc-export': return void exportDoc();
     case 'doc-analyze': return openAnalysis();
@@ -998,6 +1029,7 @@ app.addEventListener('click', (e) => {
     case 'lib-undo': return void libraryUndo();
     case 'lib-new': closeOverlays(); return void openOverlay('new');
     case 'lib-doc-delete': return void libraryDeleteDoc(el.dataset.id!);
+    case 'edit-doc-delete': return void editDeleteDoc(el.dataset.id!);
   }
   onEventAct(el.dataset.act ?? '', el);
 });
@@ -1504,6 +1536,7 @@ function setCloudDoc(doc: CloudDoc | null) {
 
 /** Abre uma partitura que não está na nuvem (arquivo, nova, exemplo). */
 function openLocal(score: Score) {
+  if (tab === 'edit') setTab('write');
   cloudDetach(false);
   closeDocView();
   editor.load(score);
@@ -2357,6 +2390,13 @@ async function openDoc(name: string, bytes: Uint8Array) {
 
 function showDocView(restore = false) {
   if (!doc) return;
+  if (tab !== 'edit') {
+    // a aba Editar mostra o documento aberto ao entrar
+    setTab('edit');
+    if (docView) return;
+  }
+  if (docStored) safeSet(OPEN_DOC_KEY, docStored.id);
+  editHomeEl.hidden = true;
   if (marking) marking = false;
   docView = true;
   annotHand = false;
@@ -2380,7 +2420,7 @@ function closeDocView() {
   docView = false;
   annotSelected = -1;
   docViewEl.hidden = true;
-  $('.sheet').hidden = false;
+  $('.sheet').hidden = tab !== 'write';
   app.classList.remove('doc-mode');
   docLayers = [];
   docPagesEl.innerHTML = '';
@@ -2737,28 +2777,61 @@ function stageLayoutWidth(): number {
 function setTab(next: Tab) {
   if (next === tab) return;
   stopPlayback();
-  if (next === 'perform') {
-    if (marking) toggleMarking(false);
-    if (docView) closeDocView();
-    if (editor.inputMode) editor.toggleInputMode(false);
-  } else {
+  // saindo da aba atual
+  if (tab === 'perform') {
     exitImmersive();
     stageItem = null;
+    if (eventsOpen) void toggleEvents(false);
+  }
+  if (tab === 'edit' && docView) closeDocView();
+  if (next !== 'write') {
+    if (marking) toggleMarking(false);
+    if (editor.inputMode) editor.toggleInputMode(false);
+    closeOverlays();
   }
   tab = next;
   safeSet(TAB_KEY, tab);
   app.classList.toggle('perform-mode', tab === 'perform');
+  app.classList.toggle('edit-mode', tab === 'edit');
   performEl.hidden = tab !== 'perform';
-  $('.sheet').hidden = tab === 'perform';
+  $('.sheet').hidden = tab !== 'write';
+  editHomeEl.hidden = true;
   app.querySelectorAll<HTMLElement>('[data-act="tab"]').forEach((b) => {
     const on = b.dataset.tab === tab;
     b.classList.toggle('on', on);
     b.setAttribute('aria-selected', String(on));
   });
-  if (tab === 'perform') {
-    renderPerform();
-    window.scrollTo(0, 0);
+  window.scrollTo(0, 0);
+  if (tab === 'perform') renderPerform();
+  else if (tab === 'edit') {
+    if (doc) showDocView(true);
+    else renderEditHome();
   } else render();
+}
+
+const editHomeEl = $<HTMLElement>('.edit-home');
+
+/** Aba Editar sem documento aberto: carregar e documentos recentes. */
+async function renderEditHome() {
+  if (tab !== 'edit' || docView) return;
+  editHomeEl.hidden = false;
+  renderAnnotBar();
+  const box = editHomeEl.querySelector<HTMLElement>('.edit-recent')!;
+  const list = await listDocs();
+  if (tab !== 'edit' || docView) return;
+  box.innerHTML = list.length
+    ? `<h3 class="lib-h">Seus documentos <span>${list.length}</span></h3>
+       <ul class="lib-list">${list
+         .map(
+           (d) => `<li class="lib-row">
+             <button type="button" class="lib-main" data-act="doc-open" data-id="${d.id}" title="Abrir e continuar de onde parou">
+               <span class="lib-title">${escapeHtml(d.name)}</span><small>aberto ${when(d.updatedAt)}</small>
+             </button>
+             <button type="button" class="lib-icon danger" data-act="edit-doc-delete" data-id="${d.id}" title="Apagar" aria-label="Apagar ${escapeHtml(d.name)}">${ICON.trash}</button>
+           </li>`,
+         )
+         .join('')}</ul>`
+    : '<p class="sound-note">Os documentos que você abrir aqui ficam guardados neste navegador, com as marcações, para continuar depois.</p>';
 }
 
 /** Desenha a partitura do palco no tamanho da edição e só muda a escala (zoom). */
@@ -3132,7 +3205,7 @@ function onEventAct(act: string, el: HTMLElement): boolean {
         // PDF/foto: abre na aba Escrever, no visualizador com marcações
         const d = it.doc;
         stageItem = null;
-        setTab('write');
+        setTab('edit');
         void openDoc(d.name, d.bytes);
         return true;
       }
@@ -3343,7 +3416,10 @@ async function flushFeedback() {
 window.addEventListener('resize', () => tab === 'perform' && renderPerform());
 
 
-if (localStorage.getItem(TAB_KEY) === 'perform') setTab('perform');
+{
+  const saved = localStorage.getItem(TAB_KEY);
+  if (saved === 'perform' || saved === 'edit') setTab(saved);
+}
 
 // ---------------------------------------------------------------- minhas partituras
 
@@ -3485,3 +3561,18 @@ void saveToLibrary(editor.score);
 
 // não perde a última mudança se a página fechar antes do salvamento automático
 window.addEventListener('pagehide', () => safeSet(STORAGE_KEY, JSON.stringify(editor.score)));
+
+async function editDeleteDoc(id: string) {
+  const d = (await listDocs()).find((x) => x.id === id);
+  if (!d) return;
+  const ok = await askConfirm('Apagar documento?', `“${d.name}” e todas as marcações feitas nele serão apagados deste navegador. O arquivo original no seu aparelho não muda.`, 'Apagar');
+  if (!ok) return;
+  await deleteDoc(id);
+  if (docStored?.id === id) {
+    doc?.destroy();
+    doc = null;
+    docStored = null;
+  }
+  void renderEditHome();
+  toast('Documento apagado');
+}

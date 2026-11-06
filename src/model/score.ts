@@ -84,6 +84,10 @@ export interface Part {
   midiProgram: number;
   /** Transposição em semitons entre o escrito e o som real (Si♭ = -2). */
   transposition: number;
+  /** Volume na reprodução (0–1, padrão 0,8). */
+  volume?: number;
+  /** Sem som na reprodução. */
+  muted?: boolean;
   staves: Staff[];
 }
 

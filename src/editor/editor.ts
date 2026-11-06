@@ -4,7 +4,7 @@ import { DURATION_ORDER, durationValue } from '../model/duration';
 import type { Fifths } from '../model/key';
 import { keyAlter } from '../model/key';
 import type { Alter, Pitch, Step } from '../model/pitch';
-import { clefMiddle, diatonicIndex, nearestOctave, transposeOctave, transposeSemitone } from '../model/pitch';
+import { clefMiddle, diatonicIndex, toMidi, nearestOctave, transposeOctave, transposeSemitone } from '../model/pitch';
 import type { Score, Staff, TimeSignature } from '../model/score';
 import { allStaves, createPart, effectiveKey, effectiveTimeSignature, MAX_VOICES, measureCapacity, newId, setChange } from '../model/score';
 import type { LogicalEvent } from '../model/sequence';
@@ -327,6 +327,27 @@ export class Editor {
 
   insertPitch(p: Pitch): void {
     this.insertEvent('chord', [{ id: newId('n'), pitch: p, tieToNext: false }], [p]);
+  }
+
+  /** Insere um acorde inteiro de uma vez (teclado MIDI). */
+  insertChord(pitches: Pitch[]): void {
+    if (!pitches.length) return;
+    const sorted = [...pitches].sort((a, b) => diatonicIndex(a) - diatonicIndex(b));
+    this.insertEvent('chord', sorted.map((p) => ({ id: newId('n'), pitch: p, tieToNext: false })), sorted);
+  }
+
+  /** Acrescenta notas ao acorde logo antes do cursor (teclas que chegaram um pouco depois). */
+  addPitchesToPrevious(pitches: Pitch[]): void {
+    if (!pitches.length || this.cursor === 0) return;
+    const events = this.events();
+    const ev = events[this.cursor - 1];
+    if (ev.kind !== 'chord') return;
+    const fresh = pitches.filter((p) => !ev.notes.some((n) => toMidi(n.pitch) === toMidi(p)));
+    if (!fresh.length) return;
+    this.snapshot();
+    for (const p of fresh) ev.notes.push({ id: newId('n'), pitch: p, tieToNext: false });
+    ev.notes.sort((a, b) => diatonicIndex(a.pitch) - diatonicIndex(b.pitch));
+    this.commit(events, { sounded: fresh });
   }
 
   insertRest(): void {

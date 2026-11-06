@@ -11,6 +11,10 @@ export interface ScheduledNote {
   duration: number;
   /** programa General MIDI do instrumento */
   program: number;
+  /** parte (instrumento) de onde vem a nota */
+  partIndex: number;
+  /** intensidade MIDI (1–127) */
+  velocity: number;
 }
 
 export interface PlaybackPlan {
@@ -85,6 +89,8 @@ export function schedule(score: Score, from: Fraction = Fraction.ZERO): Playback
       start: (n.start.toNumber() - offset) * spw,
       duration: n.length.toNumber() * spw,
       program: score.parts[n.partIndex].midiProgram,
+      partIndex: n.partIndex,
+      velocity: n.velocity,
     }));
   const steps = onsets.filter((t) => t.gte(from)).map((t) => ({ at: (t.toNumber() - offset) * spw, time: t.toNumber() }));
   return { notes: playable, steps, total: Math.max(0, (end.toNumber() - offset) * spw) };

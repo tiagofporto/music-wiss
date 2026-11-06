@@ -60,6 +60,14 @@ No menu **Arquivo** (ou `Ctrl+O`, arrastando o arquivo para a janela, ou pela pa
 | MIDI (`.mid`) | | ✓ | Formato 1, uma trilha por instrumento, com programa General MIDI, andamento e fórmulas de compasso |
 | PDF | | ✓ | A4, título na 1ª página, sistemas sem corte entre páginas, numeração |
 
+## Som e teclado MIDI
+
+O botão **Som** abre o painel de áudio:
+
+- **Volumes:** volume geral e, para cada instrumento, volume e mudo (salvos na partitura).
+- **Instrumentos:** sem nada carregado, o editor toca com timbres sintetizados, um por família General MIDI (piano, órgão, cordas, metais, palhetas, flautas, coro, cordas dedilhadas…). Para som de instrumentos gravados, carregue um **SoundFont** (`.sf2` ou `.sf3`, como o GeneralUser GS ou o FluidR3_GM). O arquivo é lido no próprio navegador (zonas por nota e intensidade, afinação, laço, envelope, filtro e pan) e fica guardado para as próximas visitas.
+- **Teclado MIDI:** conecta pelo Web MIDI (Chrome, Edge, Opera). Cada tecla soa na hora com o instrumento atual e a intensidade tocada. No modo de escrita (`N`) a tecla vira nota com a figura escolhida; teclas apertadas juntas viram um acorde, e uma tecla somada enquanto o acorde ainda está seguro entra nele. A grafia segue a tonalidade (Fá# em Sol maior, Sol♭ em tons de bemol) e instrumentos transpositores recebem a nota escrita.
+
 ## Arquitetura
 
 ```
@@ -77,7 +85,9 @@ src/
   editor/     Comandos de edição, cursor, desfazer/refazer
   render/     Layout da página (largura dos compassos, quebra de linha, justificação)
               + desenho com VexFlow e fonte SMuFL Bravura
-  audio/      Sequenciador (partitura → notas no tempo) e sintetizador Web Audio
+  audio/      Sequenciador (partitura → notas no tempo), motor de som com volumes por
+              instrumento, timbres internos e leitor/tocador de SoundFont (SF2/SF3)
+  input/      Teclado MIDI (Web MIDI, agrupamento de acordes)
   io/         MusicXML (exportar/importar, .mxl), MIDI e PDF
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos
@@ -107,6 +117,6 @@ src/
 ## Próximos passos
 
 - Fase 2: ~~importar/exportar MusicXML, exportar MIDI e PDF~~ (feito); importar MIDI fica para depois.
-- Fase 3: som com soundfonts (SF2/SF3) e entrada por teclado MIDI (Web MIDI).
+- Fase 3: ~~som com soundfonts (SF2/SF3), volumes por instrumento e entrada por teclado MIDI~~ (feito). Escrita em tempo real (tocando junto com o metrônomo) fica para depois.
 - Fase 4: dinâmicas, articulações, letra, cifras e barras de repetição.
 - Fase 5: contas, nuvem, compartilhamento, colaboração e assistência com IA.

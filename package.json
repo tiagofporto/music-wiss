@@ -1,0 +1,22 @@
+{
+  "name": "music-wiss",
+  "version": "0.1.0",
+  "description": "Editor de partituras web com identidade própria",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -p . && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "vexflow": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "vite": "^7.0.2",
+    "vitest": "^3.2.4"
+  },
+  "private": true,
+  "type": "module"
+}

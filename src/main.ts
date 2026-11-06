@@ -85,7 +85,7 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
     <div class="brand"><img src="/favicon.svg" alt="" /><span>Music Wiss</span></div>
-    <div class="tabs" role="tablist" aria-label="Modo">
+    <div class="tabs" role="tablist" aria-label="Modo"><span class="tab-ink" aria-hidden="true"></span>
       <button class="tab on" role="tab" aria-selected="true" data-act="tab" data-tab="write" title="Escrever e editar a partitura">${ICON.pen}<span>Escrever</span></button>
       <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="edit" title="Editar PDF e fotos: marcar, selos, ler com IA (Ctrl+Shift+E)">${ICON.doc}<span>Editar</span></button>
       <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="perform" title="Tocar: partitura limpa, tela cheia e eventos (Ctrl+Shift+P)">${ICON.music}<span>Tocar</span></button>
@@ -134,6 +134,18 @@ app.innerHTML = `
     </article>
     <section class="edit-home" hidden aria-label="Editar PDF e fotos">
       <div class="edit-hero">
+        <div class="edit-art" aria-hidden="true">
+          <div class="edit-art-stack">
+            <div class="edit-art-page"></div>
+            <div class="edit-art-page"></div>
+            <div class="edit-art-page">
+              <span class="edit-art-mark m1"></span>
+              <span class="edit-art-mark m2"></span>
+              <span class="edit-art-mark m3">➜</span>
+              <span class="edit-art-mark m4">⭐</span>
+            </div>
+          </div>
+        </div>
         <h1>Editar PDF e fotos</h1>
         <p>Carregue a partitura que você já tem e trabalhe em cima dela: marque com caneta e marca-texto, escreva, cole selos, apague, e baixe o PDF marcado. A IA também lê as notas e transforma em partitura editável.</p>
         <button type="button" class="edit-drop" data-act="edit-load">
@@ -300,7 +312,7 @@ app.innerHTML = `
       </div>
     </div>
   </div>
-  <div class="toast"></div>
+  <div class="toast" role="status" aria-live="polite"></div>
   <input type="file" accept=".sf2,.sf3" hidden data-soundfont />
   <input type="file" multiple accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-stage-file />
   <input type="file" accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-file />
@@ -470,6 +482,7 @@ function stopPlayback() {
 }
 
 function updatePlayButton() {
+  $('.topbar [data-act="play"]').classList.toggle('playing', !!playing);
   $('.topbar [data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Ouvir</span>`;
   app.querySelectorAll<HTMLElement>('.float-play').forEach((b) => (b.innerHTML = playing ? ICON.stop : ICON.play));
 }
@@ -2802,12 +2815,34 @@ function setTab(next: Tab) {
     b.setAttribute('aria-selected', String(on));
   });
   window.scrollTo(0, 0);
+  positionTabInk();
   if (tab === 'perform') renderPerform();
   else if (tab === 'edit') {
     if (doc) showDocView(true);
     else renderEditHome();
   } else render();
+  // entrada: a folha volta para a estante
+  replay(tab === 'write' ? $('.sheet') : tab === 'perform' ? $('.perform-wrap') : doc ? docViewEl : $('.edit-hero'), tab === 'edit' ? 'fade-up' : 'enter-3d');
 }
+
+/** Reinicia uma animação de entrada (classe CSS) num elemento. */
+function replay(el: HTMLElement, cls: string) {
+  el.classList.remove(cls);
+  void el.offsetWidth;
+  el.classList.add(cls);
+  el.addEventListener('animationend', () => el.classList.remove(cls), { once: true });
+}
+
+/** Marcador das abas: desliza até a aba ativa. */
+function positionTabInk() {
+  const tabs = $('.tabs');
+  const on = tabs.querySelector<HTMLElement>('.tab.on');
+  if (!on) return;
+  tabs.style.setProperty('--tx', `${on.offsetLeft}px`);
+  tabs.style.setProperty('--tw', `${on.offsetWidth}px`);
+}
+window.addEventListener('resize', () => positionTabInk());
+void document.fonts?.ready.then(() => positionTabInk());
 
 const editHomeEl = $<HTMLElement>('.edit-home');
 
@@ -3461,9 +3496,9 @@ function renderLibrary() {
     ? `<div class="lib-undo" role="status">“${escapeHtml(libraryTrash.title)}” foi apagada. <button type="button" class="link-btn" data-act="lib-undo">Desfazer</button></div>`
     : '';
   const rows = list
-    .map((e) => {
+    .map((e, i) => {
       const current = e.id === editor.score.id;
-      return `<li class="lib-row ${current ? 'current' : ''}">
+      return `<li class="lib-row ${current ? 'current' : ''}" style="--i:${Math.min(i, 12)}">
         <button type="button" class="lib-main" data-act="lib-open" data-id="${e.id}" title="${current ? 'Esta é a partitura aberta' : 'Abrir'}">
           <span class="lib-title">${escapeHtml(e.title)}${current ? '<span class="lib-badge">aberta</span>' : ''}</span>
           <small>${[e.composer && escapeHtml(e.composer), escapeHtml(e.summary), `editada ${when(e.updatedAt)}`].filter(Boolean).join(' · ')}</small>
@@ -3575,4 +3610,23 @@ async function editDeleteDoc(id: string) {
   }
   void renderEditHome();
   toast('Documento apagado');
+}
+
+// entrada da folha na estante e marcador das abas
+positionTabInk();
+if (tab === 'write') replay($('.sheet'), 'enter-3d');
+
+// pilha de folhas da aba Editar acompanha o mouse (só com mouse e sem movimento reduzido)
+if (matchMedia('(pointer: fine)').matches && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const hero = $<HTMLElement>('.edit-hero');
+  const stack = $<HTMLElement>('.edit-art-stack');
+  hero.addEventListener('pointermove', (e) => {
+    const r = hero.getBoundingClientRect();
+    stack.style.setProperty('--rx', `${((e.clientX - r.left) / r.width - 0.5) * 24}deg`);
+    stack.style.setProperty('--ry', `${-((e.clientY - r.top) / r.height - 0.5) * 16}deg`);
+  });
+  hero.addEventListener('pointerleave', () => {
+    stack.style.setProperty('--rx', '0deg');
+    stack.style.setProperty('--ry', '0deg');
+  });
 }

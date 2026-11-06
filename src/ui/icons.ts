@@ -1,5 +1,5 @@
 const svg = (body: string) =>
-  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
+  `<svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${body}</svg>`;
 
 export const ICON = {
   play: svg('<path d="M7 5l12 7-12 7z" fill="currentColor" stroke="none"/>'),

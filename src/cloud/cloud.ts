@@ -1,5 +1,6 @@
 import type { RealtimeChannel, Session, SupabaseClient } from '@supabase/supabase-js';
 import type { Score } from '../model/score';
+import type { Transcription } from '../ai/transcription';
 import { cloudConfig } from './config';
 
 /**
@@ -248,9 +249,9 @@ export interface AssistantAnswer {
   issues: Array<{ measure: number; message: string }>;
 }
 
-export async function askAssistant(task: 'harmonizar' | 'revisar', scoreText: string, style: string): Promise<AssistantAnswer> {
+async function invokeAssistant(body: Record<string, unknown>): Promise<unknown> {
   const sb = await need();
-  const { data, error } = await sb.functions.invoke('assistente', { body: { task, score: scoreText, style } });
+  const { data, error } = await sb.functions.invoke('assistente', { body });
   if (error) {
     // a função devolve { error } com a explicação
     const ctx = (error as { context?: Response }).context;
@@ -262,6 +263,30 @@ export async function askAssistant(task: 'harmonizar' | 'revisar', scoreText: st
     }
     throw new Error(detail || 'O assistente não respondeu. Ele precisa estar publicado no Supabase (função "assistente").');
   }
-  const a = data as Partial<AssistantAnswer>;
+  return data;
+}
+
+export async function askAssistant(task: 'harmonizar' | 'revisar', scoreText: string, style: string): Promise<AssistantAnswer> {
+  const a = (await invokeAssistant({ task, score: scoreText, style })) as Partial<AssistantAnswer>;
   return { summary: a.summary ?? '', chords: a.chords ?? [], issues: a.issues ?? [] };
+}
+
+/**
+ * Lê páginas de partitura (imagens JPEG em base64) e devolve a transcrição
+ * e uma análise para edição.
+ */
+export async function askTranscription(images: string[], hint: string): Promise<Transcription> {
+  const t = (await invokeAssistant({ task: 'transcrever', images, hint })) as Partial<Transcription>;
+  return {
+    summary: t.summary ?? '',
+    title: t.title ?? '',
+    composer: t.composer ?? '',
+    tempo: t.tempo ?? 96,
+    beats: t.beats ?? 4,
+    beatType: t.beatType ?? 4,
+    keyFifths: t.keyFifths ?? 0,
+    parts: t.parts ?? [],
+    issues: t.issues ?? [],
+    suggestions: t.suggestions ?? [],
+  };
 }

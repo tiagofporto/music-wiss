@@ -998,3 +998,51 @@ select {
 .ai-chords span { border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; font-size: 13px; color: var(--muted); }
 .ai-chords b { color: var(--fg, inherit); }
 .ai-issues { margin: 0; padding-left: 18px; display: grid; gap: 6px; }
+
+/* ---------- marcações e documentos ---------- */
+.annot-layer {
+  position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible;
+}
+.annot-layer.active { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.annot-layer.active[data-tool="text"] { cursor: text; }
+.annot-layer.active[data-tool="erase"] { cursor: cell; }
+.score.marking { cursor: crosshair; }
+.mark-btn.on { background: var(--accent-soft); border-color: var(--accent); }
+.annot-bar {
+  position: fixed; left: 50%; top: 66px; transform: translateX(-50%); z-index: 30;
+  display: flex; align-items: center; gap: 4px; padding: 6px 8px; border-radius: 14px;
+  background: var(--paper); border: 1px solid var(--line); box-shadow: 0 10px 30px rgb(0 0 0 / 0.18);
+  max-width: calc(100vw - 32px); overflow-x: auto;
+}
+.annot-bar[hidden] { display: none; }
+.annot-bar button {
+  display: grid; place-items: center; min-width: 36px; height: 36px; padding: 0 8px; border-radius: 10px;
+  border: 1px solid transparent; background: none; color: inherit; font: inherit; font-size: 13px; cursor: pointer;
+}
+.annot-bar button svg { width: 18px; height: 18px; }
+.annot-bar button:hover { background: color-mix(in srgb, var(--line) 50%, transparent); }
+.annot-bar button.on { background: var(--accent-soft); border-color: var(--accent); }
+.annot-bar button.strong { background: var(--accent); color: #fff; }
+.annot-bar .swatch { min-width: 26px; width: 26px; height: 26px; padding: 0; border-radius: 50%; background: var(--c); border: 2px solid transparent; }
+.annot-bar .swatch.on { border-color: var(--ink, currentColor); box-shadow: 0 0 0 2px var(--bg); }
+.annot-bar .sep { width: 1px; align-self: stretch; background: var(--line); margin: 4px 4px; }
+.annot-input {
+  position: fixed; z-index: 40; font: 600 15px Manrope, system-ui, sans-serif; padding: 4px 8px;
+  border: 1px solid var(--line); border-radius: 8px; background: var(--paper); min-width: 200px;
+}
+.doc-view { display: grid; gap: 14px; justify-items: center; padding-bottom: 110px; }
+.doc-view[hidden] { display: none; }
+.doc-head {
+  width: min(1000px, 100%); display: flex; flex-wrap: wrap; gap: 10px; align-items: center; justify-content: space-between;
+}
+.doc-name { font-family: Fraunces, Georgia, serif; font-size: 20px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.doc-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.doc-pages { width: 100%; display: grid; gap: 18px; justify-items: center; }
+.doc-page { position: relative; background: #fff; box-shadow: 0 6px 24px rgb(0 0 0 / 0.12); border-radius: 4px; overflow: hidden; max-width: 100%; }
+.doc-page canvas { display: block; }
+.an-h { margin: 6px 0 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.ai-issues.muted { color: var(--muted); font-size: 13px; }
+.docs-body { display: grid; gap: 10px; }
+.doc-mode .dock, .doc-mode .status, .doc-mode .expr-panel { display: none; }
+.annot-on .stage { padding-top: 64px; }
+.annot-bar .swatch, .annot-bar .swatch.on, .annot-bar .swatch:hover { background: var(--c); }

@@ -27,6 +27,15 @@ import { DURATION_GLYPH, DURATION_KEYS, GLYPH, SHORTCUTS } from './ui/commands';
 import { ICON } from './ui/icons';
 import { exportMusicXml } from './io/musicxml-export';
 import { importMusicXml, readMusicXmlFile } from './io/musicxml-import';
+import { importMidi } from './io/midi-import';
+import type { Annotation, AnnotationTool, LayerState } from './annotate/annotations';
+import { ANNOTATION_COLORS, AnnotationLayer } from './annotate/annotations';
+import type { OpenDocument } from './doc/document';
+import { exportAnnotatedPdf, imageType, isPdf, openDocument, pagesAsJpeg } from './doc/document';
+import type { StoredDoc } from './doc/doc-store';
+import { deleteDoc, docId, listDocs, loadDoc, saveDoc } from './doc/doc-store';
+import type { Transcription } from './ai/transcription';
+import { transcriptionToScore } from './ai/transcription';
 import { exportMidi } from './io/midi';
 
 const STORAGE_KEY = 'music-wiss:score';
@@ -54,7 +63,8 @@ app.innerHTML = `
     <div class="menu">
       <button class="icon-btn" data-act="file-menu" aria-haspopup="true" title="Abrir e exportar">${ICON.download}<span>Arquivo</span></button>
       <div class="menu-list" hidden>
-        <button data-act="open">${ICON.upload}<span>Abrir…</span><small>MusicXML, .mxl, .wiss.json</small></button>
+        <button data-act="open">${ICON.upload}<span>Abrir…</span><small>MusicXML, MIDI, PDF, foto, .wiss.json</small></button>
+        <button data-act="docs">${ICON.doc}<span>Documentos recentes</span><small>PDFs e fotos com marcações</small></button>
         <button data-act="save">${ICON.download}<span>Salvar</span><small>.wiss.json · Ctrl S</small></button>
         <hr />
         <button data-act="export-pdf"><span class="fmt">PDF</span><span>Exportar PDF</span><small>para imprimir</small></button>
@@ -62,6 +72,7 @@ app.innerHTML = `
         <button data-act="export-midi"><span class="fmt">MID</span><span>Exportar MIDI</span><small>sequenciadores e DAWs</small></button>
       </div>
     </div>
+    <button class="icon-btn mark-btn" data-act="mark" title="Marcar por cima da partitura (M)">${ICON.pen}<span>Marcar</span></button>
     <button class="icon-btn" data-act="assistant" title="Assistente: harmonizar e revisar">${ICON.sparkle}<span>Assistente</span></button>
     <button class="icon-btn cloud-btn" data-act="cloud" title="Nuvem: conta, partituras e compartilhar">${ICON.cloud}<span>Nuvem</span><span class="cloud-dot" hidden></span></button>
     <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
@@ -86,7 +97,19 @@ app.innerHTML = `
         Veja todos os atalhos com <span class="kbd">?</span>.
       </div>
     </article>
+    <section class="doc-view" hidden aria-label="Documento">
+      <div class="doc-head">
+        <div class="doc-name"></div>
+        <div class="doc-actions">
+          <button class="icon-btn" data-act="doc-analyze">${ICON.sparkle}<span>Ler e analisar com IA</span></button>
+          <button class="icon-btn" data-act="doc-export">${ICON.download}<span>Baixar com marcações</span></button>
+          <button class="icon-btn" data-act="doc-close">Voltar à partitura</button>
+        </div>
+      </div>
+      <div class="doc-pages"></div>
+    </section>
   </main>
+  <div class="annot-bar" role="toolbar" aria-label="Marcações" hidden></div>
 
   <aside class="status" aria-live="polite"></aside>
   <section class="expr-panel" aria-label="Expressão" hidden></section>
@@ -143,9 +166,23 @@ app.innerHTML = `
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
+  <div class="overlay" data-overlay="analysis" hidden>
+    <div class="panel dialog assistant-panel">
+      <h2>Ler e analisar</h2>
+      <div class="analysis-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
+  <div class="overlay" data-overlay="docs" hidden>
+    <div class="panel dialog assistant-panel">
+      <h2>Documentos recentes</h2>
+      <div class="docs-body"></div>
+      <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
+    </div>
+  </div>
   <div class="toast"></div>
   <input type="file" accept=".sf2,.sf3" hidden data-soundfont />
-  <input type="file" accept=".json,.musicxml,.xml,.mxl,application/json,application/xml" hidden data-file />
+  <input type="file" accept=".json,.musicxml,.xml,.mxl,.mid,.midi,.pdf,.jpg,.jpeg,.png,.webp,application/json,application/xml,audio/midi,application/pdf,image/*" hidden data-file />
   <div class="drop-hint" hidden>Solte o arquivo para abrir</div>
 `;
 
@@ -198,7 +235,8 @@ function render() {
     Object.assign(c.style, { left: `${lastRender.cursor.x}px`, top: `${lastRender.cursor.y}px`, height: `${lastRender.cursor.height}px` });
     scoreEl.appendChild(c);
   }
-  hintEl.hidden = editor.events().length > 0 || editor.inputMode;
+  hintEl.hidden = editor.events().length > 0 || editor.inputMode || marking;
+  attachScoreLayer();
   renderDock();
   renderExpr();
   placeEntry();
@@ -322,6 +360,15 @@ function onKey(e: KeyboardEvent) {
     return openPalette();
   }
   if (typing || anyOverlayOpen()) return;
+  if (docView) return onDocKey(e, mod);
+  if (e.key.toLowerCase() === 'm' && !mod && !e.altKey) {
+    e.preventDefault();
+    return toggleMarking();
+  }
+  if (marking && mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+    e.preventDefault();
+    return annotUndo();
+  }
 
   if (mod && e.key.toLowerCase() === 'z') {
     e.preventDefault();
@@ -418,7 +465,7 @@ function commands(): Command[] {
     { id: 'play', label: playing ? 'Parar reprodução' : 'Tocar a partir do cursor', hint: 'Espaço', run: togglePlay },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
     { id: 'save', label: 'Salvar arquivo (.wiss.json)', hint: 'Ctrl S', run: exportJson },
-    { id: 'open', label: 'Abrir arquivo (MusicXML, .mxl, .wiss.json)…', hint: 'Ctrl O', run: () => $<HTMLInputElement>('[data-file]').click() },
+    { id: 'open', label: 'Abrir arquivo (MusicXML, MIDI, PDF, foto, .wiss.json)…', hint: 'Ctrl O', run: () => $<HTMLInputElement>('[data-file]').click() },
     { id: 'export-pdf', label: 'Exportar PDF', run: () => void exportPdfFile() },
     { id: 'export-xml', label: 'Exportar MusicXML', run: exportXml },
     { id: 'export-midi', label: 'Exportar MIDI', run: exportMid },
@@ -432,6 +479,9 @@ function commands(): Command[] {
     { id: 'ending2', label: `Casa de 2ª vez (compasso ${editor.selectionMeasure() + 1})`, run: () => editor.toggleBar('ending2') },
     ...DYNAMICS.map((d) => ({ id: `dyn-${d}`, label: `Dinâmica: ${d}`, run: () => editor.setDynamic(d) })),
     ...ARTICULATIONS.map((a) => ({ id: `art-${a}`, label: `Articulação: ${ARTICULATION_NAMES_PT[a]}`, hint: ART_KEYS[a], run: () => editor.toggleArticulation(a) })),
+    { id: 'mark', label: marking ? 'Parar de marcar' : 'Marcar por cima da partitura (caneta, marca-texto, texto)', hint: 'M', run: () => toggleMarking() },
+    { id: 'docs', label: 'Documentos recentes (PDF e fotos com marcações)…', run: () => void openRecentDocs() },
+    ...(doc ? [{ id: 'doc-show', label: `Voltar ao documento: ${doc.name}`, run: showDocView }] : []),
     { id: 'cloud', label: 'Nuvem: entrar, minhas partituras, compartilhar…', run: openCloud },
     { id: 'assistant', label: 'Assistente: harmonizar ou revisar…', run: openAssistant },
     { id: 'theme', label: 'Alternar tema claro/escuro', run: () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark') },
@@ -622,6 +672,18 @@ async function openFile(file: File) {
       toast('Partitura aberta');
       return;
     }
+    if (/\.midi?$/.test(name) || (bytes[0] === 0x4d && bytes[1] === 0x54 && bytes[2] === 0x68 && bytes[3] === 0x64)) {
+      const { score, warnings } = importMidi(bytes, file.name.replace(/\.midi?$/i, ''));
+      openLocal(score);
+      toast(warnings.length ? `MIDI aberto. ${warnings[0]}` : 'MIDI aberto: aperte Espaço para tocar');
+      if (warnings.length) console.info('Avisos da importação:', warnings);
+      return;
+    }
+    if (isPdf(bytes) || imageType(bytes)) {
+      toast('Abrindo…');
+      await openDoc(file.name, bytes);
+      return;
+    }
     const { score, warnings } = importMusicXml(readMusicXmlFile(name, bytes));
     openLocal(score);
     toast(warnings.length ? `Partitura aberta. ${warnings[0]}` : 'Partitura aberta');
@@ -750,6 +812,22 @@ app.addEventListener('click', (e) => {
     case 'natural': return editor.setAlter(0);
     case 'tie': return editor.toggleTie();
     case 'tuplet': return tuplet(3);
+    case 'mark': return toggleMarking();
+    case 'annot-tool': return setAnnotTool(el.dataset.tool as AnnotationTool | 'hand');
+    case 'annot-color': return setAnnotColor(el.dataset.color!);
+    case 'annot-undo': return annotUndo();
+    case 'annot-clear': return annotClear();
+    case 'annot-done': return docView ? closeDocView() : toggleMarking(false);
+    case 'docs': closeMenu(); return void openRecentDocs();
+    case 'doc-open': return void reopenDoc(el.dataset.id!);
+    case 'doc-forget': return void forgetDoc(el.dataset.id!);
+    case 'doc-close': return closeDocView();
+    case 'doc-show': return showDocView();
+    case 'doc-export': return void exportDoc();
+    case 'doc-analyze': return openAnalysis();
+    case 'an-run': return void runAnalysis();
+    case 'an-open': return applyAnalysis(false);
+    case 'an-play': return applyAnalysis(true);
     case 'file-menu': return toggleMenu();
     case 'open': closeMenu(); return $<HTMLInputElement>('[data-file]').click();
     case 'save': closeMenu(); return exportJson();
@@ -827,7 +905,7 @@ for (const input of [titleInput, composerInput, tempoInput]) {
 }
 
 scoreEl.addEventListener('mousedown', (e) => {
-  if (!lastRender) return;
+  if (!lastRender || marking) return;
   const rect = scoreEl.getBoundingClientRect();
   const x = e.clientX - rect.left;
   const y = e.clientY - rect.top;
@@ -1255,6 +1333,7 @@ function setCloudDoc(doc: CloudDoc | null) {
 /** Abre uma partitura que não está na nuvem (arquivo, nova, exemplo). */
 function openLocal(score: Score) {
   cloudDetach(false);
+  closeDocView();
   editor.load(score);
 }
 
@@ -1714,6 +1793,405 @@ function applyAssistant() {
   toast(`${valid.length} cifras aplicadas (Ctrl+Z desfaz)`);
   closeOverlays();
 }
+
+// ---------------------------------------------------------------- marcações (partitura e documentos)
+
+const annotState: LayerState = { tool: 'pen', color: ANNOTATION_COLORS[0] };
+let annotHand = false;
+let marking = false;
+let scoreLayer: AnnotationLayer | null = null;
+const annotBar = $<HTMLElement>('.annot-bar');
+
+function attachScoreLayer() {
+  scoreLayer = new AnnotationLayer(scoreEl, annotState, () => editor.score.annotations ?? [], (list) => editor.setAnnotations(list), askAnnotText);
+  scoreLayer.setActive(marking && !annotHand);
+  scoreEl.classList.toggle('marking', marking);
+}
+
+function toggleMarking(on = !marking) {
+  if (on && editor.inputMode) editor.toggleInputMode(false);
+  marking = on;
+  if (on) annotHand = false;
+  renderAnnotBar();
+  render();
+  if (on) toast('Marcando: desenhe por cima. M ou Concluir para voltar a editar.');
+}
+
+function renderAnnotBar() {
+  const show = marking || !!docView;
+  annotBar.hidden = !show;
+  app.classList.toggle('annot-on', show);
+  $('.mark-btn').classList.toggle('on', marking);
+  if (!show) return;
+  const tools: Array<[AnnotationTool | 'hand', string, string]> = [
+    ...(docView ? ([['hand', ICON.hand, 'Mover a página (rolar)']] as Array<[AnnotationTool | 'hand', string, string]>) : []),
+    ['pen', ICON.pen, 'Caneta'],
+    ['highlight', ICON.highlight, 'Marca-texto'],
+    ['text', ICON.text, 'Texto (clique onde quer escrever)'],
+    ['erase', ICON.eraser, 'Borracha (passe por cima)'],
+  ];
+  const current = annotHand ? 'hand' : annotState.tool;
+  annotBar.innerHTML = `
+    ${tools.map(([t, ico, label]) => `<button type="button" data-act="annot-tool" data-tool="${t}" class="${current === t ? 'on' : ''}" title="${label}" aria-pressed="${current === t}">${ico}</button>`).join('')}
+    <span class="sep"></span>
+    ${ANNOTATION_COLORS.map((c) => `<button type="button" data-act="annot-color" data-color="${c}" class="swatch ${annotState.color === c ? 'on' : ''}" style="--c:${c}" title="Cor" aria-pressed="${annotState.color === c}"></button>`).join('')}
+    <span class="sep"></span>
+    <button type="button" data-act="annot-undo" title="Desfazer a última marcação (Ctrl Z)">${ICON.undo}</button>
+    <button type="button" data-act="annot-clear" class="text-btn" title="Apagar todas as marcações ${docView ? 'do documento' : 'da partitura'}">Limpar</button>
+    ${docView ? '' : '<button type="button" data-act="annot-done" class="text-btn strong">Concluir</button>'}`;
+}
+
+function setAnnotTool(t: AnnotationTool | 'hand') {
+  annotHand = t === 'hand';
+  if (t !== 'hand') annotState.tool = t;
+  renderAnnotBar();
+  scoreLayer?.setActive(marking && !annotHand);
+  docLayers.forEach((l) => l.setActive(!annotHand));
+}
+
+function setAnnotColor(c: string) {
+  annotState.color = c;
+  if (annotHand) setAnnotTool(annotState.tool);
+  renderAnnotBar();
+}
+
+function annotUndo() {
+  if (docView) {
+    const last = docUndo.pop();
+    if (!last || !docStored) return;
+    docStored.marks[last.page] = last.list;
+    persistDoc();
+    docLayers[last.page]?.draw();
+    return;
+  }
+  editor.undo();
+}
+
+function annotClear() {
+  if (docView && docStored) {
+    if (!Object.values(docStored.marks).some((l) => l.length)) return;
+    if (!confirm('Apagar todas as marcações deste documento?')) return;
+    Object.entries(docStored.marks).forEach(([k, v]) => docUndo.push({ page: Number(k), list: v }));
+    docStored.marks = {};
+    persistDoc();
+    docLayers.forEach((l) => l.draw());
+    return;
+  }
+  if (editor.score.annotations?.length) editor.setAnnotations([]); // Ctrl+Z traz de volta
+}
+
+/** Caixinha para digitar uma nota de texto onde a pessoa clicou. */
+function askAnnotText(at: { clientX: number; clientY: number }): Promise<string | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.className = 'annot-input';
+    input.placeholder = 'Escreva e aperte Enter';
+    input.style.left = `${at.clientX}px`;
+    input.style.top = `${at.clientY - 14}px`;
+    input.style.color = annotState.color;
+    document.body.appendChild(input);
+    let done = false;
+    const finish = (v: string | null) => {
+      if (done) return;
+      done = true;
+      input.remove();
+      resolve(v);
+    };
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') finish(input.value);
+      else if (e.key === 'Escape') finish(null);
+    });
+    input.addEventListener('blur', () => finish(input.value));
+    input.focus();
+  });
+}
+
+// ---------------------------------------------------------------- documentos (PDF e fotos)
+
+let doc: OpenDocument | null = null;
+let docStored: StoredDoc | null = null;
+let docView = false;
+let docLayers: AnnotationLayer[] = [];
+let docUndo: Array<{ page: number; list: Annotation[] }> = [];
+let docSaveTimer = 0;
+let docRenderToken = 0;
+const docViewEl = $<HTMLElement>('.doc-view');
+const docPagesEl = $<HTMLElement>('.doc-pages');
+
+async function openDoc(name: string, bytes: Uint8Array) {
+  stopPlayback();
+  const opened = await openDocument(name, bytes);
+  doc?.destroy();
+  doc = opened;
+  const id = await docId(bytes);
+  docStored = (await loadDoc(id)) ?? { id, name, bytes, marks: {}, updatedAt: Date.now() };
+  docStored.name = name;
+  docUndo = [];
+  annotState.tool = 'pen';
+  analysis = null;
+  analysisError = '';
+  persistDoc(0);
+  showDocView();
+  const n = opened.pages.length;
+  const marked = Object.values(docStored.marks).some((l) => l.length);
+  toast(`${opened.kind === 'pdf' ? `PDF com ${n} ${n === 1 ? 'página' : 'páginas'}` : 'Imagem aberta'}${marked ? ' (com suas marcações)' : ''}. Marque por cima ou peça para a IA ler.`);
+}
+
+function showDocView() {
+  if (!doc) return;
+  if (marking) marking = false;
+  docView = true;
+  annotHand = false;
+  if (annotState.tool === 'erase') annotState.tool = 'pen';
+  $('.sheet').hidden = true;
+  docViewEl.hidden = false;
+  app.classList.add('doc-mode');
+  $('.doc-name').textContent = doc.name;
+  renderAnnotBar();
+  void renderDocPages();
+}
+
+function closeDocView() {
+  if (!docView) return;
+  docView = false;
+  docViewEl.hidden = true;
+  $('.sheet').hidden = false;
+  app.classList.remove('doc-mode');
+  docLayers = [];
+  docPagesEl.innerHTML = '';
+  renderAnnotBar();
+  render();
+}
+
+async function renderDocPages() {
+  if (!doc || !docStored) return;
+  const token = ++docRenderToken;
+  const width = Math.min(1000, Math.max(280, docPagesEl.clientWidth - 8));
+  docPagesEl.innerHTML = '';
+  docLayers = [];
+  const stored = docStored;
+  for (let i = 0; i < doc.pages.length; i++) {
+    const page = doc.pages[i];
+    const box = document.createElement('div');
+    box.className = 'doc-page';
+    box.style.width = `${width}px`;
+    box.style.height = `${(width * page.height) / page.width}px`;
+    const canvas = document.createElement('canvas');
+    box.appendChild(canvas);
+    docPagesEl.appendChild(box);
+    const layer = new AnnotationLayer(
+      box,
+      annotState,
+      () => stored.marks[i] ?? [],
+      (list) => {
+        docUndo.push({ page: i, list: stored.marks[i] ?? [] });
+        stored.marks[i] = list;
+        persistDoc();
+      },
+      askAnnotText,
+    );
+    layer.setActive(!annotHand);
+    docLayers.push(layer);
+  }
+  // desenha as páginas uma por vez (as primeiras aparecem logo)
+  for (let i = 0; i < doc.pages.length; i++) {
+    if (token !== docRenderToken) return;
+    const box = docPagesEl.children[i] as HTMLElement | undefined;
+    const canvas = box?.querySelector('canvas');
+    if (!canvas) return;
+    try {
+      await doc.pages[i].render(canvas, width);
+    } catch (err) {
+      console.error(err);
+    }
+  }
+}
+
+function persistDoc(delay = 500) {
+  if (!docStored) return;
+  clearTimeout(docSaveTimer);
+  const d = docStored;
+  docSaveTimer = window.setTimeout(() => void saveDoc({ ...d, updatedAt: Date.now() }), delay);
+}
+
+function onDocKey(e: KeyboardEvent, mod: boolean) {
+  if (mod && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    return annotUndo();
+  }
+  if (mod && e.key.toLowerCase() === 'o') {
+    e.preventDefault();
+    return $<HTMLInputElement>('[data-file]').click();
+  }
+  if (e.key === 'Escape') return closeDocView();
+  const tools: Record<string, AnnotationTool | 'hand'> = { p: 'pen', m: 'highlight', t: 'text', e: 'erase', h: 'hand' };
+  const t = tools[e.key.toLowerCase()];
+  if (t && !mod && !e.altKey) setAnnotTool(t);
+}
+
+async function exportDoc() {
+  if (!doc || !docStored) return;
+  toast('Gerando PDF com as marcações…');
+  try {
+    const blob = await exportAnnotatedPdf(doc, docStored.marks);
+    download(`${doc.name.replace(/\.[^.]+$/, '')} (marcado).pdf`, blob);
+    toast('PDF com marcações baixado');
+  } catch (err) {
+    console.error(err);
+    toast('Não foi possível gerar o PDF');
+  }
+}
+
+async function openRecentDocs() {
+  const body = $('.docs-body');
+  openOverlay('docs');
+  body.innerHTML = '<p class="sound-note">Carregando…</p>';
+  const list = await listDocs();
+  body.innerHTML = list.length
+    ? `<p class="sound-note">Ficam guardados neste navegador, com as marcações de cada página.</p>
+       <ul class="cloud-list">${list
+         .map(
+           (d) => `<li class="${docStored?.id === d.id ? 'current' : ''}"><span class="cloud-title">${escapeHtml(d.name)}</span>
+             <small>${new Date(d.updatedAt).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })}</small>
+             <button type="button" class="icon-btn small" data-act="doc-open" data-id="${d.id}">Abrir</button>
+             <button type="button" class="link-btn danger" data-act="doc-forget" data-id="${d.id}">Remover</button></li>`,
+         )
+         .join('')}</ul>`
+    : '<p>Nenhum documento ainda. Abra um PDF ou uma foto de partitura pelo menu Arquivo → Abrir.</p>';
+}
+
+async function reopenDoc(id: string) {
+  const d = await loadDoc(id);
+  closeOverlays();
+  if (!d) return toast('Não encontrei este documento');
+  try {
+    await openDoc(d.name, d.bytes);
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+  }
+}
+
+async function forgetDoc(id: string) {
+  await deleteDoc(id);
+  if (docStored?.id === id) {
+    closeDocView();
+    doc?.destroy();
+    doc = null;
+    docStored = null;
+  }
+  void openRecentDocs();
+}
+
+// ---------------------------------------------------------------- ler e analisar (IA)
+
+let analysis: { t: Transcription; score: Score; warnings: string[] } | null = null;
+let analysisBusy = false;
+let analysisError = '';
+let analysisPages = '';
+let analysisHint = '';
+
+function openAnalysis() {
+  if (!doc) return;
+  if (!analysisPages) analysisPages = doc.pages.length > 1 ? `1-${Math.min(4, doc.pages.length)}` : '1';
+  renderAnalysis();
+  openOverlay('analysis');
+}
+
+/** "1-3, 5" → [0, 1, 2, 4] (no máximo 4 páginas que existem). */
+function pickPages(text: string, count: number): number[] {
+  const out: number[] = [];
+  for (const part of text.split(',')) {
+    const m = /^\s*(\d+)\s*(?:-\s*(\d+))?\s*$/.exec(part);
+    if (!m) continue;
+    const a = Number(m[1]);
+    const b = m[2] ? Number(m[2]) : a;
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) if (i >= 1 && i <= count && !out.includes(i - 1)) out.push(i - 1);
+  }
+  return out.slice(0, 4);
+}
+
+function renderAnalysis() {
+  const body = $('.analysis-body');
+  if (!cloudConfig() || !session) {
+    body.innerHTML = `<p>A leitura com IA roda no servidor do Music Wiss e precisa que você esteja conectado à nuvem.</p>
+      <p class="sound-note">Enquanto isso, dá para marcar por cima do documento e baixar o PDF com as marcações.</p>
+      <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="cloud">Abrir Nuvem</button></div>`;
+    return;
+  }
+  const n = doc?.pages.length ?? 0;
+  const a = analysis;
+  const parts = a ? a.score.parts.map((p) => `${escapeHtml(p.name)} (${p.staves.length === 1 ? '1 pauta' : `${p.staves.length} pautas`})`).join(', ') : '';
+  body.innerHTML = `
+    <p class="sound-note">A IA lê as páginas, transcreve as notas e aponta o que vale revisar. Funciona melhor com partitura impressa e foto reta e nítida; manuscritos saem aproximados.</p>
+    <div class="cloud-form">
+      ${n > 1 ? `<label>Páginas (até 4 por vez, de ${n})<input name="pages" value="${escapeHtml(analysisPages)}" placeholder="1-4" /></label>` : ''}
+      <label>Observação (opcional)<input name="hint" value="${escapeHtml(analysisHint)}" placeholder="ex.: é para coral; o 2º sistema está apagado" /></label>
+      <div class="cloud-actions"><button type="button" class="icon-btn primary" data-act="an-run" ${analysisBusy ? 'disabled' : ''}>${analysisBusy ? 'Lendo a partitura… (pode levar 1–2 min)' : a ? 'Ler de novo' : 'Ler e analisar'}</button></div>
+    </div>
+    ${analysisError ? `<p class="cloud-msg">${escapeHtml(analysisError)}</p>` : ''}
+    ${a ? `<section class="ai-answer">
+      <p>${escapeHtml(a.t.summary)}</p>
+      ${a.score.parts.length ? `<p class="sound-note"><b>${escapeHtml(a.score.title)}</b>${a.score.composer ? ` · ${escapeHtml(a.score.composer)}` : ''} · ${a.score.timeSignature.beats}/${a.score.timeSignature.beatType} · ${escapeHtml(keyName(a.score.keyFifths))} · ${a.score.parts[0].staves[0].measures.length - 1} compassos · ${parts}</p>` : ''}
+      ${a.t.issues.length ? `<h3 class="an-h">Para conferir</h3><ul class="ai-issues">${a.t.issues.map((i) => `<li><b>Compasso ${i.measure}</b> ${escapeHtml(i.message)}</li>`).join('')}</ul>` : ''}
+      ${a.t.suggestions.length ? `<h3 class="an-h">Sugestões de edição</h3><ul class="ai-issues">${a.t.suggestions.map((x) => `<li>${escapeHtml(x)}</li>`).join('')}</ul>` : ''}
+      ${a.warnings.length ? `<ul class="ai-issues muted">${a.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
+      ${a.score.parts.length ? `<div class="cloud-actions">
+        <button type="button" class="icon-btn primary" data-act="an-open">Abrir como partitura editável</button>
+        <button type="button" class="icon-btn" data-act="an-play">${ICON.play}<span>Abrir e tocar</span></button>
+      </div>
+      <p class="sound-note">A partitura atual é substituída (salve antes se precisar). O documento continua em Arquivo → Documentos recentes.</p>` : ''}
+    </section>` : ''}`;
+}
+
+$('.analysis-body').addEventListener('input', (e) => {
+  const el = e.target as HTMLInputElement;
+  if (el.name === 'pages') analysisPages = el.value;
+  if (el.name === 'hint') analysisHint = el.value;
+});
+
+async function runAnalysis() {
+  if (!doc) return;
+  const pages = pickPages(analysisPages || '1', doc.pages.length);
+  if (!pages.length) {
+    analysisError = 'Escolha as páginas, por exemplo 1-3.';
+    return renderAnalysis();
+  }
+  analysisBusy = true;
+  analysisError = '';
+  renderAnalysis();
+  try {
+    const images = await pagesAsJpeg(doc, pages);
+    const t = await cloud.askTranscription(images, analysisHint);
+    if (!t.parts.length) {
+      analysis = { t, score: editor.score, warnings: [] };
+      analysis.score = { ...editor.score, parts: [] };
+    } else {
+      const { score, warnings } = transcriptionToScore(t);
+      analysis = { t, score, warnings };
+    }
+  } catch (err) {
+    analysisError = err instanceof Error ? err.message : String(err);
+  }
+  analysisBusy = false;
+  if (!$('[data-overlay="analysis"]').hidden) renderAnalysis();
+  else if (analysis && !analysisError) toast('A leitura terminou: abra "Ler e analisar" para ver');
+}
+
+function applyAnalysis(play: boolean) {
+  if (!analysis?.score.parts.length) return;
+  closeOverlays();
+  openLocal(analysis.score);
+  toast(play ? 'Tocando a transcrição' : 'Partitura aberta: confira os compassos apontados');
+  if (play) togglePlay();
+}
+
+let docResizeTimer = 0;
+window.addEventListener('resize', () => {
+  if (!docView) return;
+  clearTimeout(docResizeTimer);
+  docResizeTimer = window.setTimeout(() => void renderDocPages(), 200);
+});
 
 // ---------------------------------------------------------------- início
 

@@ -80,6 +80,23 @@ O botão **Som** abre o painel de áudio:
 - **Instrumentos:** sem nada carregado, o editor toca com timbres sintetizados, um por família General MIDI (piano, órgão, cordas, metais, palhetas, flautas, coro, cordas dedilhadas…). Para som de instrumentos gravados, carregue um **SoundFont** (`.sf2` ou `.sf3`, como o GeneralUser GS ou o FluidR3_GM). O arquivo é lido no próprio navegador (zonas por nota e intensidade, afinação, laço, envelope, filtro e pan) e fica guardado para as próximas visitas.
 - **Teclado MIDI:** conecta pelo Web MIDI (Chrome, Edge, Opera). Cada tecla soa na hora com o instrumento atual e a intensidade tocada. No modo de escrita (`N`) a tecla vira nota com a figura escolhida; teclas apertadas juntas viram um acorde, e uma tecla somada enquanto o acorde ainda está seguro entra nele. A grafia segue a tonalidade (Fá# em Sol maior, Sol♭ em tons de bemol) e instrumentos transpositores recebem a nota escrita.
 
+## Abrir MIDI, PDF e fotos; marcar por cima
+
+- **MIDI (.mid)**: Arquivo → Abrir. Vira partitura editável e toca com Espaço.
+  Cada trilha vira um instrumento (piano e órgão em duas pautas). Os tempos
+  são arredondados para semicolcheias, e notas que se sobrepõem vão para a 2ª voz.
+  A percussão (canal 10) ainda fica de fora.
+- **PDF ou foto (JPG/PNG)**: abre o documento para ler e marcar. As marcações
+  ficam guardadas neste navegador (Arquivo → Documentos recentes), e
+  "Baixar com marcações" gera um PDF novo com tudo desenhado.
+- **Marcar a partitura**: botão **Marcar** (ou tecla M). As ferramentas são
+  caneta, marca-texto, texto e borracha, em 5 cores. Cada traço desfaz com
+  Ctrl+Z. As marcações são salvas com a partitura (arquivo e nuvem).
+- **Ler e analisar com IA** (precisa da nuvem): a IA lê até 4 páginas por vez
+  e transcreve as notas. Também aponta o que conferir e sugere edições. A
+  partitura transcrita abre editável e toca. Compassos que não fecham são
+  completados com pausas e avisados.
+
 ## Nuvem, compartilhamento e assistente
 
 O botão **Nuvem** liga o editor a um projeto [Supabase](https://supabase.com):
@@ -143,9 +160,11 @@ src/
   audio/      Sequenciador (partitura → notas no tempo), motor de som com volumes por
               instrumento, timbres internos e leitor/tocador de SoundFont (SF2/SF3)
   input/      Teclado MIDI (Web MIDI, agrupamento de acordes)
-  io/         MusicXML (exportar/importar, .mxl), MIDI e PDF
+  io/         MusicXML (exportar/importar, .mxl), MIDI (exportar/importar) e PDF
   cloud/      Conta, partituras na nuvem, links e tempo real (Supabase, carregado sob demanda)
-  ai/         Resumo da partitura em texto para o assistente
+  ai/         Resumo da partitura para o assistente e leitura da transcrição da IA
+  annotate/   Marcações à mão (caneta, marca-texto, texto, borracha)
+  doc/        PDF (pdf.js, sob demanda) e fotos: páginas, documentos guardados, exportar
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos
 ```
@@ -180,3 +199,4 @@ Fora do `src/`: `supabase/migrations` (banco e regras de acesso) e
 - Fase 3: ~~som com soundfonts (SF2/SF3), volumes por instrumento e entrada por teclado MIDI~~ (feito). Escrita em tempo real (tocando junto com o metrônomo) fica para depois.
 - Fase 4: ~~dinâmicas, articulações, letra, cifras e barras de repetição~~ (feito). Depois: crescendo/diminuendo, ligaduras de expressão, D.C./D.S./Coda e várias estrofes.
 - Fase 5: ~~contas, nuvem, compartilhamento, colaboração e assistente com IA~~ (feito). Depois: edição simultânea nota a nota (hoje a sincronização é da partitura inteira), histórico de versões e comentários.
+- Fase 6: ~~abrir MIDI e PDF/fotos, marcações por cima e leitura com IA~~ (feito). Depois: percussão no MIDI, tercinas detectadas no MIDI e marcações presas às notas (hoje ficam na posição da página).

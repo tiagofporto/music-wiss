@@ -108,6 +108,34 @@ O botão **Som** abre o painel de áudio:
   partitura transcrita abre editável e toca. Compassos que não fecham são
   completados com pausas e avisados.
 
+## Aba Tocar (palco)
+
+No topo há duas abas: **Escrever** (o editor) e **Tocar**, para ler e tocar
+a partitura sem distrações. O botão que toca o som agora se chama **Ouvir**.
+
+- **Partitura limpa**: sem barra de escrita, cursor ou avisos; as marcações à
+  mão aparecem, só para ver.
+- **Tela cheia** (botão ou F): esconde tudo menos a partitura. Mexer o mouse
+  ou tocar na tela mostra uma barra pequena (zoom, ouvir, anterior/próxima,
+  sair). Esc sai. No iPhone, onde o navegador não deixa tela cheia, a página
+  esconde as próprias barras.
+- **Zoom**: −, + e o número do meio (ajustar à largura). Também com as teclas
+  + − 0 ou Ctrl + roda do mouse. O zoom escolhido fica guardado.
+- **Virar página**: setas, PgDn/PgUp (pedais bluetooth de virar página mandam
+  essas teclas). No fim da partitura, avança para a próxima do evento.
+- **Eventos**: crie um evento (nome, data, local) e adicione as partituras do
+  repertório. Uma cópia de cada partitura fica salva no aparelho e funciona
+  sem internet; abra com um toque, reordene, tire, ou use **Atualizar** depois
+  de editar. Os próximos eventos aparecem primeiro. **Editar** leva a
+  partitura do evento para a aba Escrever.
+- **WhatsApp**: gera o PDF. No celular abre o compartilhar do sistema com o
+  PDF anexado (escolha o WhatsApp). No computador o PDF é baixado e o WhatsApp
+  abre com a mensagem pronta; é só anexar o arquivo. Se a partitura está na
+  sua nuvem, o link para ver vai junto.
+- **Sugestão** (balão): nota de 1 a 5 e texto. Conectado, vai para a tabela
+  `feedback` (só inserir; ninguém lê pelo app). Sem conta, fica guardada no
+  aparelho e é enviada quando a pessoa entrar.
+
 ## Nuvem, compartilhamento e assistente
 
 O botão **Nuvem** liga o editor a um projeto [Supabase](https://supabase.com):
@@ -175,6 +203,7 @@ src/
   cloud/      Conta, partituras na nuvem, links e tempo real (Supabase, carregado sob demanda)
   ai/         Resumo da partitura para o assistente e leitura da transcrição da IA
   annotate/   Marcações à mão (caneta, marca-texto, texto, borracha)
+  perform/    Aba Tocar: eventos (repertórios no IndexedDB) e envio do PDF pelo WhatsApp
   doc/        PDF (pdf.js, sob demanda) e fotos: páginas, documentos guardados, exportar
   ui/         Estilos, ícones e atalhos
   main.ts     Tela: folha, barra flutuante, paleta de comandos, diálogos

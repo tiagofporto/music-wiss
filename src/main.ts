@@ -37,6 +37,10 @@ import { deleteDoc, docId, listDocs, loadDoc, saveDoc } from './doc/doc-store';
 import type { Transcription } from './ai/transcription';
 import { transcriptionToScore } from './ai/transcription';
 import { exportMidi } from './io/midi';
+import type { PerformEvent } from './perform/events';
+import { addScore, createEvent, deleteEvent, formatEventDate, listEvents, moveItem, removeItem, saveEvent } from './perform/events';
+import { sharePdfToWhatsApp } from './perform/share';
+import type { FeedbackInput } from './cloud/cloud';
 
 const STORAGE_KEY = 'music-wiss:score';
 const THEME_KEY = 'music-wiss:theme';
@@ -50,6 +54,28 @@ let midiDevices: string[] = [];
 let soundLoading: string | null = null;
 let lastRender: RenderResult | null = null;
 let playing: { timers: number[]; time: number | null } | null = null;
+/** A reprodução atual é da partitura do palco (aba Tocar). */
+let playingStage = false;
+const APP_VERSION = '0.1.0';
+
+// aba Tocar
+type Tab = 'write' | 'perform';
+const TAB_KEY = 'music-wiss:tab';
+const ZOOM_KEY = 'music-wiss:perform-zoom';
+const ZOOM_STEPS = [0.5, 0.6, 0.7, 0.8, 0.9, 1, 1.1, 1.25, 1.4, 1.6, 1.8, 2, 2.5, 3];
+let tab: Tab = 'write';
+/** null = ajustar à largura da tela. */
+let performZoom: number | null = loadZoom();
+/** Largura em que a folha é desenhada na edição (as marcações à mão dependem dela). */
+let layoutWidth = 1018;
+/** Partitura de um evento aberta no palco (null = a partitura em edição). */
+let stageItem: { event: PerformEvent; index: number } | null = null;
+let immersive = false;
+let floatTimer = 0;
+let events: PerformEvent[] = [];
+let eventsOpen = false;
+let openEventId: string | null = null;
+let creatingEvent = false;
 
 // ---------------------------------------------------------------- DOM
 
@@ -57,6 +83,10 @@ const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <header class="topbar">
     <div class="brand"><img src="/favicon.svg" alt="" /><span>Music Wiss</span></div>
+    <div class="tabs" role="tablist" aria-label="Modo">
+      <button class="tab on" role="tab" aria-selected="true" data-act="tab" data-tab="write" title="Escrever e editar a partitura">${ICON.pen}<span>Escrever</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-act="tab" data-tab="perform" title="Tocar: partitura limpa, tela cheia e eventos (Ctrl+Shift+P)">${ICON.music}<span>Tocar</span></button>
+    </div>
     <div class="spacer"></div>
     <button class="icon-btn" data-act="palette" title="Paleta de comandos (Ctrl+K)">${ICON.search}<span>Comandos</span><span class="kbd">Ctrl K</span></button>
     <button class="icon-btn" data-act="new" title="Nova partitura">${ICON.plus}<span>Nova</span></button>
@@ -77,7 +107,7 @@ app.innerHTML = `
     <button class="icon-btn cloud-btn" data-act="cloud" title="Nuvem: conta, partituras e compartilhar">${ICON.cloud}<span>Nuvem</span><span class="cloud-dot" hidden></span></button>
     <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
-    <button class="icon-btn primary" data-act="play" title="Tocar (Espaço)"></button>
+    <button class="icon-btn primary" data-act="play" title="Ouvir a partitura (Espaço)"></button>
   </header>
 
   <main class="stage">
@@ -108,7 +138,44 @@ app.innerHTML = `
       </div>
       <div class="doc-pages"></div>
     </section>
+    <section class="perform" hidden aria-label="Tocar">
+      <div class="perform-bar" role="toolbar" aria-label="Controles do palco">
+        <div class="perform-info">
+          <div class="perform-title"></div>
+          <div class="perform-sub"></div>
+        </div>
+        <div class="perform-group setlist-nav" hidden>
+          <button class="icon-btn" data-act="stage-prev" title="Partitura anterior do evento ([)" aria-label="Partitura anterior">‹</button>
+          <button class="icon-btn" data-act="stage-next" title="Próxima partitura do evento (])" aria-label="Próxima partitura">›</button>
+        </div>
+        <div class="perform-group zoom" role="group" aria-label="Zoom">
+          <button class="icon-btn" data-act="zoom-out" title="Diminuir (−)" aria-label="Diminuir">${ICON.minus}</button>
+          <button class="zoom-value" data-act="zoom-fit" title="Ajustar à largura (0)">100%</button>
+          <button class="icon-btn" data-act="zoom-in" title="Aumentar (+)" aria-label="Aumentar">${ICON.plus}</button>
+        </div>
+        <div class="perform-group">
+          <button class="icon-btn" data-act="events" title="Eventos: repertórios salvos (E)">${ICON.list}<span>Eventos</span></button>
+          <button class="icon-btn wa" data-act="share-wa" title="Enviar o PDF pelo WhatsApp">${ICON.whatsapp}<span>WhatsApp</span></button>
+          <button class="icon-btn" data-act="stage-edit" hidden title="Abrir esta partitura na aba Escrever">${ICON.pen}<span>Editar</span></button>
+          <button class="icon-btn" data-act="feedback" title="Mandar uma sugestão" aria-label="Sugestão">${ICON.chat}</button>
+          <button class="icon-btn primary" data-act="immersive" title="Tela cheia: esconde tudo menos a partitura (F)">${ICON.expand}<span>Tela cheia</span></button>
+        </div>
+      </div>
+      <div class="perform-stage">
+        <div class="perform-wrap"><div class="perform-host score-host"></div></div>
+      </div>
+      <div class="perform-float" aria-label="Controles da tela cheia">
+        <button data-act="stage-prev" class="setlist-nav" title="Anterior ([)" aria-label="Anterior">‹</button>
+        <button data-act="zoom-out" title="Diminuir (−)" aria-label="Diminuir">${ICON.minus}</button>
+        <button class="zoom-value" data-act="zoom-fit" title="Ajustar à largura (0)">100%</button>
+        <button data-act="zoom-in" title="Aumentar (+)" aria-label="Aumentar">${ICON.plus}</button>
+        <button data-act="play" class="float-play" title="Ouvir (Espaço)" aria-label="Ouvir">${ICON.play}</button>
+        <button data-act="stage-next" class="setlist-nav" title="Próxima (])" aria-label="Próxima">›</button>
+        <button data-act="immersive" title="Sair da tela cheia (Esc)" aria-label="Sair da tela cheia">${ICON.collapse}</button>
+      </div>
+    </section>
   </main>
+  <aside class="events-panel" aria-label="Eventos" hidden></aside>
   <div class="annot-bar" role="toolbar" aria-label="Marcações" hidden></div>
   <div class="annot-pop" hidden></div>
 
@@ -181,6 +248,12 @@ app.innerHTML = `
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
+  <div class="overlay" data-overlay="feedback" hidden>
+    <div class="panel dialog feedback-panel" role="dialog" aria-modal="true" aria-label="Sugestão">
+      <h2>Sua sugestão</h2>
+      <div class="feedback-body"></div>
+    </div>
+  </div>
   <div class="overlay" data-overlay="confirm" hidden>
     <div class="panel dialog confirm-panel" role="alertdialog" aria-modal="true">
       <h2></h2>
@@ -224,12 +297,14 @@ function renderTheme(): RenderTheme {
 // ---------------------------------------------------------------- render
 
 function render() {
+  if (tab === 'perform') return renderPerform();
   const score = editor.score;
   if (document.activeElement !== titleInput) titleInput.value = score.title;
   if (document.activeElement !== composerInput) composerInput.value = score.composer;
   if (document.activeElement !== tempoInput) tempoInput.value = String(score.tempo);
 
   const width = scoreEl.clientWidth || 900;
+  if (scoreEl.clientWidth) layoutWidth = scoreEl.clientWidth;
   lastRender = renderScore(scoreEl, score, {
     width,
     selection: playing ? null : (() => {
@@ -314,18 +389,21 @@ function sound(pitches: { step: Step; alter: number; octave: number }[] | undefi
 }
 
 /** Passa volume e mudo de cada instrumento para o motor de som. */
-function syncMixer() {
-  for (const part of editor.score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
+function syncMixer(score: Score = editor.score) {
+  for (const part of score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
 }
 
 function togglePlay() {
   if (playing) return stopPlayback();
+  const stage = tab === 'perform';
+  const score = stage ? stageScore() : editor.score;
   const atEnd = editor.cursor >= editor.events().length;
-  const from = atEnd ? Fraction.ZERO : editor.cursorTime();
-  const { notes, steps, total } = schedule(editor.score, from);
+  const from = stage || atEnd ? Fraction.ZERO : editor.cursorTime();
+  const { notes, steps, total } = schedule(score, from);
   if (!notes.length) return toast('Nada para tocar ainda');
-  syncMixer();
-  const parts = editor.score.parts;
+  syncMixer(score);
+  playingStage = stage;
+  const parts = score.parts;
   const t0 = engine.now() + 0.08;
   for (const n of notes) {
     engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * n.gate, velocity: n.velocity });
@@ -354,7 +432,8 @@ function stopPlayback() {
 }
 
 function updatePlayButton() {
-  $('[data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Tocar</span>`;
+  $('.topbar [data-act="play"]').innerHTML = playing ? `${ICON.stop}<span>Parar</span>` : `${ICON.play}<span>Ouvir</span>`;
+  app.querySelectorAll<HTMLElement>('.float-play').forEach((b) => (b.innerHTML = playing ? ICON.stop : ICON.play));
 }
 
 // ---------------------------------------------------------------- teclado
@@ -370,7 +449,12 @@ function onKey(e: KeyboardEvent) {
     e.preventDefault();
     return openPalette();
   }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'p') {
+    e.preventDefault();
+    return setTab(tab === 'perform' ? 'write' : 'perform');
+  }
   if (typing || anyOverlayOpen()) return;
+  if (tab === 'perform') return onPerformKey(e, mod);
   if (docView) return onDocKey(e, mod);
   if (e.key.toLowerCase() === 'm' && !mod && !e.altKey) {
     e.preventDefault();
@@ -474,7 +558,9 @@ function tuplet(n: number) {
 function commands(): Command[] {
   const list: Command[] = [
     { id: 'mode', label: editor.inputMode ? 'Sair do modo de escrita' : 'Entrar no modo de escrita', hint: 'N', run: () => editor.toggleInputMode() },
-    { id: 'play', label: playing ? 'Parar reprodução' : 'Tocar a partir do cursor', hint: 'Espaço', run: togglePlay },
+    { id: 'play', label: playing ? 'Parar reprodução' : 'Ouvir a partir do cursor', hint: 'Espaço', run: togglePlay },
+    { id: 'tab-perform', label: tab === 'perform' ? 'Voltar para Escrever' : 'Tocar: partitura limpa e tela cheia', hint: 'Ctrl Shift P', run: () => setTab(tab === 'perform' ? 'write' : 'perform') },
+    { id: 'events', label: 'Eventos: salvar esta partitura num repertório', run: () => { setTab('perform'); void toggleEvents(true); } },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
     { id: 'save', label: 'Salvar arquivo (.wiss.json)', hint: 'Ctrl S', run: exportJson },
     { id: 'open', label: 'Abrir arquivo (MusicXML, MIDI, PDF, foto, .wiss.json)…', hint: 'Ctrl O', run: () => $<HTMLInputElement>('[data-file]').click() },
@@ -858,7 +944,9 @@ app.addEventListener('click', (e) => {
     case 'export-pdf': closeMenu(); return void exportPdfFile();
     case 'export-xml': closeMenu(); return exportXml();
     case 'export-midi': closeMenu(); return exportMid();
+    case 'tab': return setTab(el.dataset.tab as Tab);
   }
+  onEventAct(el.dataset.act ?? '', el);
 });
 
 document.addEventListener('pointerdown', (e) => {
@@ -1711,6 +1799,7 @@ async function initCloud() {
     cloudList = null;
     updateCloudChip();
     if (s) {
+      void flushFeedback();
       void refreshList();
       void openPendingLink();
       if (cloudDoc) void startLive();
@@ -2556,3 +2645,473 @@ applyTheme(savedTheme === 'dark' || (!savedTheme && prefersDark) ? 'dark' : 'lig
 void initCloud();
 if (annotPrefs.marking) toggleMarking(true);
 void resumeOpenDoc();
+
+// ---------------------------------------------------------------- aba Tocar (palco)
+
+const performEl = $<HTMLElement>('.perform');
+const stageEl = $<HTMLElement>('.perform-stage');
+const stageHost = $<HTMLElement>('.perform-host');
+const eventsEl = $<HTMLElement>('.events-panel');
+
+function loadZoom(): number | null {
+  try {
+    const z = Number(localStorage.getItem(ZOOM_KEY));
+    return z && Number.isFinite(z) ? z : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Partitura que está no palco agora. */
+function stageScore(): Score {
+  return stageItem ? stageItem.event.items[stageItem.index].score : editor.score;
+}
+
+function stageLayoutWidth(): number {
+  const w = stageItem ? stageItem.event.items[stageItem.index].layoutWidth || 1018 : layoutWidth;
+  // sem marcações à mão, não precisa repetir a largura da edição: no celular a
+  // folha estreita demais aperta os compassos, então desenha mais larga e reduz
+  return stageScore().annotations?.length ? w : Math.max(640, w);
+}
+
+function setTab(next: Tab) {
+  if (next === tab) return;
+  stopPlayback();
+  if (next === 'perform') {
+    if (marking) toggleMarking(false);
+    if (docView) closeDocView();
+    if (editor.inputMode) editor.toggleInputMode(false);
+  } else {
+    exitImmersive();
+    stageItem = null;
+  }
+  tab = next;
+  safeSet(TAB_KEY, tab);
+  app.classList.toggle('perform-mode', tab === 'perform');
+  performEl.hidden = tab !== 'perform';
+  $('.sheet').hidden = tab === 'perform';
+  app.querySelectorAll<HTMLElement>('[data-act="tab"]').forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  if (tab === 'perform') {
+    renderPerform();
+    window.scrollTo(0, 0);
+  } else render();
+}
+
+/** Desenha a partitura do palco no tamanho da edição e só muda a escala (zoom). */
+function renderPerform() {
+  if (tab !== 'perform') return;
+  const score = stageScore();
+  const w = stageLayoutWidth();
+  const avail = Math.max(240, stageEl.clientWidth - (immersive ? 16 : 32));
+  const fit = Math.min(3, avail / w);
+  const z = performZoom ?? fit;
+  const res = renderScore(stageHost, score, {
+    width: w,
+    selection: null,
+    playingTime: playing && playingStage ? playing.time : null,
+    cursor: null,
+    theme: { ...renderTheme(), accent: renderTheme().ink, warn: 'transparent' },
+  });
+  // marcações à mão, só para ver
+  const layer = new AnnotationLayer(stageHost, annotState, () => score.annotations ?? [], () => {}, async () => null);
+  layer.setActive(false);
+  stageHost.style.width = `${w}px`;
+  stageHost.style.transform = `scale(${z})`;
+  const wrap = stageHost.parentElement!;
+  wrap.style.width = `${w * z}px`;
+  wrap.style.height = `${res.height * z}px`;
+  $('.perform-title').textContent = score.title || 'Sem título';
+  $('.perform-sub').innerHTML = stageItem
+    ? `${escapeHtml(stageItem.event.name)} · ${stageItem.index + 1} de ${stageItem.event.items.length}`
+    : `${escapeHtml(score.composer || 'Partitura em edição')}`;
+  app.querySelectorAll<HTMLElement>('.zoom-value').forEach((el) => (el.textContent = `${Math.round(z * 100)}%`));
+  app.querySelectorAll<HTMLButtonElement>('[data-act="zoom-fit"]').forEach((b) => b.classList.toggle('on', performZoom === null));
+  const hasPrev = !!stageItem && stageItem.index > 0;
+  const hasNext = !!stageItem && stageItem.index < stageItem.event.items.length - 1;
+  app.querySelectorAll<HTMLButtonElement>('[data-act="stage-prev"]').forEach((b) => (b.disabled = !hasPrev));
+  app.querySelectorAll<HTMLButtonElement>('[data-act="stage-next"]').forEach((b) => (b.disabled = !hasNext));
+  app.querySelectorAll<HTMLElement>('.setlist-nav').forEach((el) => (el.hidden = !stageItem));
+  $('[data-act="stage-edit"]').hidden = !stageItem;
+}
+
+function zoomBy(dir: 1 | -1) {
+  const avail = Math.max(240, stageEl.clientWidth - 32);
+  const current = performZoom ?? avail / stageLayoutWidth();
+  const next = dir > 0 ? ZOOM_STEPS.find((s) => s > current + 0.001) : [...ZOOM_STEPS].reverse().find((s) => s < current - 0.001);
+  if (!next) return toast(dir > 0 ? 'Zoom máximo' : 'Zoom mínimo');
+  setZoom(next);
+}
+
+function setZoom(z: number | null) {
+  // mantém o mesmo ponto da música no meio da tela
+  const before = stageEl.scrollHeight;
+  const mid = window.scrollY + window.innerHeight / 2 - (stageEl.getBoundingClientRect().top + window.scrollY);
+  performZoom = z;
+  safeSet(ZOOM_KEY, z === null ? '' : String(z));
+  renderPerform();
+  const ratio = before ? mid / before : 0;
+  const top = stageEl.getBoundingClientRect().top + window.scrollY;
+  window.scrollTo(0, Math.max(0, top + ratio * stageEl.scrollHeight - window.innerHeight / 2));
+}
+
+/** Rola uma "página" (para pedais de virar página e setas). */
+function turnPage(dir: 1 | -1) {
+  const h = window.innerHeight - (immersive ? 40 : 120);
+  const atEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 4;
+  const atTop = window.scrollY <= 2;
+  if (dir > 0 && atEnd && stageItem) return stageGo(1);
+  if (dir < 0 && atTop && stageItem && stageItem.index > 0) return stageGo(-1, true);
+  window.scrollBy({ top: dir * h * 0.9, behavior: 'smooth' });
+}
+
+function stageGo(delta: 1 | -1, toEnd = false) {
+  if (!stageItem) return;
+  const i = stageItem.index + delta;
+  if (i < 0 || i >= stageItem.event.items.length) return;
+  stopPlayback();
+  stageItem = { ...stageItem, index: i };
+  renderPerform();
+  window.scrollTo(0, toEnd ? document.documentElement.scrollHeight : 0);
+  toast(`${i + 1} de ${stageItem.event.items.length}: ${stageItem.event.items[i].title}`);
+}
+
+// ---- tela cheia
+
+function enterImmersive() {
+  if (eventsOpen) void toggleEvents(false);
+  immersive = true;
+  app.classList.add('immersive');
+  const el = document.documentElement;
+  if (!document.fullscreenElement && el.requestFullscreen) {
+    el.requestFullscreen({ navigationUI: 'hide' }).catch(() => {
+      /* sem tela cheia do navegador (iPhone): fica o modo imersivo da página */
+    });
+  }
+  showFloat();
+  renderPerform();
+  toast('Tela cheia: toque ou mexa o mouse para ver os controles. Esc sai.');
+}
+
+function exitImmersive() {
+  if (!immersive) return;
+  immersive = false;
+  app.classList.remove('immersive');
+  if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+  renderPerform();
+}
+
+function toggleImmersive() {
+  return immersive ? exitImmersive() : enterImmersive();
+}
+
+document.addEventListener('fullscreenchange', () => {
+  // saiu pelo Esc do navegador
+  if (!document.fullscreenElement && immersive) exitImmersive();
+});
+
+function showFloat() {
+  if (!immersive) return;
+  app.classList.add('float-on');
+  clearTimeout(floatTimer);
+  floatTimer = window.setTimeout(() => app.classList.remove('float-on'), 2600);
+}
+['pointermove', 'pointerdown'].forEach((ev) => window.addEventListener(ev, () => immersive && showFloat(), { passive: true }));
+
+function onPerformKey(e: KeyboardEvent, mod: boolean) {
+  const k = e.key;
+  let handled = true;
+  if (k === ' ') togglePlay();
+  else if (k === 'PageDown' || k === 'ArrowDown' || k === 'ArrowRight') turnPage(1);
+  else if (k === 'PageUp' || k === 'ArrowUp' || k === 'ArrowLeft') turnPage(-1);
+  else if (k === 'Home') window.scrollTo(0, 0);
+  else if (k === 'End') window.scrollTo(0, document.documentElement.scrollHeight);
+  else if ((k === '+' || k === '=') && !e.altKey) zoomBy(1);
+  else if ((k === '-' || k === '_') && !e.altKey) zoomBy(-1);
+  else if (k === '0' && !mod) setZoom(null);
+  else if (k.toLowerCase() === 'f' && !mod) toggleImmersive();
+  else if (k === 'Escape') {
+    if (immersive) exitImmersive();
+    else if (eventsOpen) toggleEvents(false);
+    else handled = false;
+  } else if (k === ']') stageGo(1);
+  else if (k === '[') stageGo(-1);
+  else if (k.toLowerCase() === 'e' && !mod) toggleEvents();
+  else handled = false;
+  if (handled) e.preventDefault();
+}
+
+// ctrl/⌘ + roda do mouse (ou pinça no trackpad) = zoom
+stageEl.addEventListener(
+  'wheel',
+  (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1 : -1);
+  },
+  { passive: false },
+);
+
+// ---- eventos (repertório)
+
+async function toggleEvents(on = !eventsOpen) {
+  eventsOpen = on;
+  app.classList.toggle('events-open', on);
+  eventsEl.hidden = !on;
+  renderPerform();
+  if (on) {
+    events = await listEvents();
+    if (!openEventId && events.length) openEventId = stageItem?.event.id ?? events[0].id;
+    renderEvents();
+  }
+}
+
+function renderEvents() {
+  const today = new Date().toISOString().slice(0, 10);
+  const current = editor.score;
+  const row = (ev: PerformEvent) => {
+    const open = ev.id === openEventId;
+    const has = ev.items.some((i) => i.scoreId === current.id);
+    const past = ev.date && ev.date < today;
+    return `<li class="event ${open ? 'open' : ''} ${past ? 'past' : ''}">
+      <button type="button" class="event-head" data-act="ev-toggle" data-id="${ev.id}" aria-expanded="${open}">
+        <span class="event-name">${escapeHtml(ev.name)}</span>
+        <small>${[formatEventDate(ev.date), ev.place && escapeHtml(ev.place), `${ev.items.length} ${ev.items.length === 1 ? 'partitura' : 'partituras'}`].filter(Boolean).join(' · ')}</small>
+      </button>
+      ${open ? `<div class="event-body">
+        ${ev.items.length ? `<ol class="setlist">${ev.items.map((it, i) => `<li class="${stageItem?.event.id === ev.id && stageItem.index === i ? 'current' : ''}">
+            <button type="button" class="setlist-open" data-act="ev-play" data-id="${ev.id}" data-i="${i}" title="Abrir no palco"><span class="n">${i + 1}</span><span class="t">${escapeHtml(it.title)}</span></button>
+            <span class="setlist-tools">
+              <button type="button" data-act="ev-up" data-id="${ev.id}" data-item="${it.id}" title="Subir" ${i === 0 ? 'disabled' : ''} aria-label="Subir">↑</button>
+              <button type="button" data-act="ev-down" data-id="${ev.id}" data-item="${it.id}" title="Descer" ${i === ev.items.length - 1 ? 'disabled' : ''} aria-label="Descer">↓</button>
+              <button type="button" data-act="ev-remove" data-id="${ev.id}" data-item="${it.id}" title="Tirar do evento" aria-label="Tirar do evento">×</button>
+            </span></li>`).join('')}</ol>`
+          : '<p class="sound-note">Nenhuma partitura ainda.</p>'}
+        <div class="cloud-actions">
+          <button type="button" class="icon-btn small ${has ? '' : 'primary'}" data-act="ev-add" data-id="${ev.id}">${has ? 'Atualizar' : 'Adicionar'} “${escapeHtml(current.title || 'Sem título')}”</button>
+          ${ev.items.length ? `<button type="button" class="icon-btn small" data-act="ev-play" data-id="${ev.id}" data-i="0">${ICON.play}<span>Começar</span></button>` : ''}
+          <button type="button" class="link-btn danger" data-act="ev-delete" data-id="${ev.id}">Apagar evento</button>
+        </div>
+      </div>` : ''}
+    </li>`;
+  };
+  eventsEl.innerHTML = `
+    <div class="events-head">
+      <h2>Eventos</h2>
+      <button type="button" class="icon-btn small" data-act="events-close" aria-label="Fechar eventos">Fechar</button>
+    </div>
+    <p class="sound-note">Junte as partituras de cada apresentação, ensaio ou missa e abra com um toque. Ficam salvas neste aparelho e funcionam sem internet.</p>
+    ${creatingEvent ? `<form class="cloud-form event-form" data-form="event">
+        <label>Nome<input name="name" required maxlength="120" placeholder="ex.: Casamento Ana e Leo" /></label>
+        <div class="event-form-row">
+          <label>Data<input name="date" type="date" /></label>
+          <label>Local<input name="place" maxlength="120" placeholder="opcional" /></label>
+        </div>
+        <div class="cloud-actions"><button class="icon-btn primary" type="submit">Criar e adicionar esta partitura</button><button type="button" class="link-btn" data-act="ev-cancel">Cancelar</button></div>
+      </form>`
+      : `<button type="button" class="icon-btn new-event" data-act="ev-new">${ICON.plus}<span>Novo evento</span></button>`}
+    ${events.length ? `<ul class="events-list">${events.map(row).join('')}</ul>` : creatingEvent ? '' : '<p class="empty-events">Você ainda não tem eventos. Crie o primeiro e adicione a partitura aberta.</p>'}`;
+  if (creatingEvent) eventsEl.querySelector<HTMLInputElement>('[name="name"]')?.focus();
+}
+
+eventsEl.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = new FormData(e.target as HTMLFormElement);
+  const ev = createEvent(String(data.get('name') ?? ''), String(data.get('date') ?? ''), String(data.get('place') ?? ''));
+  addScore(ev, editor.score, layoutWidth);
+  if (!(await saveEvent(ev))) return toast('Não consegui salvar neste navegador (modo anônimo?)');
+  creatingEvent = false;
+  openEventId = ev.id;
+  events = await listEvents();
+  renderEvents();
+  toast(`Evento criado com “${editor.score.title || 'Sem título'}”`);
+});
+
+async function withEvent(id: string, fn: (ev: PerformEvent) => void | Promise<void>) {
+  const ev = events.find((x) => x.id === id);
+  if (!ev) return;
+  await fn(ev);
+  await saveEvent(ev);
+  events = await listEvents();
+  if (stageItem?.event.id === ev.id) {
+    const fresh = events.find((x) => x.id === ev.id);
+    if (!fresh || !fresh.items.length) stageItem = null;
+    else stageItem = { event: fresh, index: Math.min(stageItem.index, fresh.items.length - 1) };
+    renderPerform();
+  }
+  renderEvents();
+}
+
+function onEventAct(act: string, el: HTMLElement): boolean {
+  const id = el.dataset.id ?? '';
+  switch (act) {
+    case 'events': void toggleEvents(); return true;
+    case 'events-close': void toggleEvents(false); return true;
+    case 'ev-new': creatingEvent = true; renderEvents(); return true;
+    case 'ev-cancel': creatingEvent = false; renderEvents(); return true;
+    case 'ev-toggle': openEventId = openEventId === id ? null : id; renderEvents(); return true;
+    case 'ev-add':
+      void withEvent(id, (ev) => {
+        const isNew = addScore(ev, editor.score, layoutWidth);
+        toast(isNew ? `Adicionada a “${ev.name}”` : 'Cópia no evento atualizada com a versão atual');
+      });
+      return true;
+    case 'ev-up': void withEvent(id, (ev) => moveItem(ev, el.dataset.item!, -1)); return true;
+    case 'ev-down': void withEvent(id, (ev) => moveItem(ev, el.dataset.item!, 1)); return true;
+    case 'ev-remove': void withEvent(id, (ev) => removeItem(ev, el.dataset.item!)); return true;
+    case 'ev-delete':
+      void (async () => {
+        const ev = events.find((x) => x.id === id);
+        if (!ev) return;
+        const ok = await askConfirm('Apagar evento?', `O evento “${ev.name}” e a lista de ${ev.items.length} ${ev.items.length === 1 ? 'partitura' : 'partituras'} serão apagados deste aparelho. As partituras originais não são apagadas.`, 'Apagar evento');
+        if (!ok) return;
+        await deleteEvent(id);
+        if (stageItem?.event.id === id) stageItem = null;
+        events = await listEvents();
+        renderEvents();
+        renderPerform();
+        toast('Evento apagado');
+      })();
+      return true;
+    case 'ev-play': {
+      const ev = events.find((x) => x.id === id);
+      if (!ev?.items.length) return true;
+      stopPlayback();
+      stageItem = { event: ev, index: Number(el.dataset.i ?? 0) };
+      if (window.innerWidth < 900) void toggleEvents(false);
+      else renderEvents();
+      renderPerform();
+      window.scrollTo(0, 0);
+      return true;
+    }
+    case 'stage-prev': stageGo(-1); return true;
+    case 'stage-next': stageGo(1); return true;
+    case 'stage-edit': {
+      // leva a partitura do evento para a edição (substitui a atual)
+      if (!stageItem) return true;
+      const it = stageItem.event.items[stageItem.index];
+      void (async () => {
+        const ok = await askConfirm('Editar esta partitura?', `“${it.title}” vai para a aba Escrever no lugar da partitura aberta agora. Salve a atual antes (Arquivo → Salvar ou na nuvem) se precisar dela.`, 'Abrir para editar');
+        if (!ok) return;
+        const copy = JSON.parse(JSON.stringify(it.score)) as Score;
+        stageItem = null;
+        openLocal(migrateScore(copy));
+        setTab('write');
+        toast('Depois de editar, use “Atualizar” no evento para guardar a versão nova');
+      })();
+      return true;
+    }
+    case 'zoom-in': zoomBy(1); return true;
+    case 'zoom-out': zoomBy(-1); return true;
+    case 'zoom-fit': setZoom(null); return true;
+    case 'immersive': toggleImmersive(); return true;
+    case 'share-wa': void shareWhatsApp(); return true;
+    case 'feedback': openFeedback(); return true;
+    case 'fb-send': void sendFeedbackNow(); return true;
+  }
+  return false;
+}
+
+// ---- compartilhar PDF pelo WhatsApp
+
+let sharing = false;
+async function shareWhatsApp() {
+  if (sharing) return;
+  sharing = true;
+  const score = stageScore();
+  toast('Preparando o PDF…');
+  try {
+    const { exportPdf } = await import('./io/pdf');
+    const pdf = await exportPdf(score);
+    // partitura na nuvem e sua: manda também o link para ver
+    let link: string | undefined;
+    if (!stageItem && cloudDoc?.role === 'owner' && session) {
+      link = await cloud.createShareLink(cloudDoc.id, 'view').catch(() => undefined);
+    }
+    const res = await sharePdfToWhatsApp(pdf, score.title, link, download);
+    if (res === 'shared') toast('Enviado');
+    else if (res === 'fallback') toast('PDF baixado. No WhatsApp que abriu, anexe o arquivo baixado (clipe 📎).');
+  } catch (err) {
+    console.error(err);
+    toast('Não foi possível preparar o PDF');
+  }
+  sharing = false;
+}
+
+// ---- sugestões (feedback)
+
+const FEEDBACK_QUEUE = 'music-wiss:feedback-queue';
+let fbRating: number | null = null;
+
+function openFeedback() {
+  fbRating = null;
+  const body = $('.feedback-body');
+  body.innerHTML = `
+    <p>Como está a aba Tocar? Sua opinião vai direto para quem faz o Music Wiss.</p>
+    <div class="rating" role="radiogroup" aria-label="Nota de 1 a 5">
+      ${[1, 2, 3, 4, 5].map((n) => `<button type="button" role="radio" aria-checked="false" data-act="fb-rate" data-n="${n}" aria-label="${n} de 5">★</button>`).join('')}
+    </div>
+    <label class="fb-label">O que podemos melhorar? (opcional)<textarea name="fb" rows="4" maxlength="2000" placeholder="ex.: queria virar a página com um pedal bluetooth"></textarea></label>
+    <p class="sound-note">${session ? 'Enviamos junto só a nota, o texto e a tela de onde veio (Tocar).' : 'Você não está conectado: a sugestão fica guardada aqui e é enviada quando você entrar na Nuvem.'}</p>
+    <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Cancelar</button><button type="button" class="icon-btn primary" data-act="fb-send">Enviar</button></div>`;
+  openOverlay('feedback');
+}
+
+$('.feedback-body').addEventListener('click', (e) => {
+  const b = (e.target as HTMLElement).closest<HTMLElement>('[data-act="fb-rate"]');
+  if (!b) return;
+  fbRating = Number(b.dataset.n);
+  $('.feedback-body').querySelectorAll<HTMLElement>('[data-act="fb-rate"]').forEach((x) => {
+    const on = Number(x.dataset.n) <= fbRating!;
+    x.classList.toggle('on', on);
+    x.setAttribute('aria-checked', String(Number(x.dataset.n) === fbRating));
+  });
+});
+
+function feedbackQueue(): FeedbackInput[] {
+  try {
+    return JSON.parse(localStorage.getItem(FEEDBACK_QUEUE) ?? '[]') as FeedbackInput[];
+  } catch {
+    return [];
+  }
+}
+
+async function sendFeedbackNow() {
+  const message = $('.feedback-body').querySelector<HTMLTextAreaElement>('[name="fb"]')!.value.trim();
+  if (!fbRating && !message) return toast('Escolha uma nota ou escreva uma sugestão');
+  const item: FeedbackInput = { rating: fbRating, message, context: 'tocar' };
+  closeOverlays();
+  if (session) {
+    try {
+      await cloud.sendFeedback(item, APP_VERSION);
+      return toast('Obrigado! Sugestão enviada 💛');
+    } catch {
+      /* sem rede ou sem a tabela: guarda para depois */
+    }
+  }
+  safeSet(FEEDBACK_QUEUE, JSON.stringify([...feedbackQueue(), item].slice(-20)));
+  toast('Obrigado! Guardamos sua sugestão e enviamos quando você estiver conectado.');
+}
+
+/** Envia as sugestões guardadas (chamado quando a pessoa entra na conta). */
+async function flushFeedback() {
+  const q = feedbackQueue();
+  if (!q.length || !session) return;
+  const left: FeedbackInput[] = [];
+  for (const item of q) {
+    try {
+      await cloud.sendFeedback(item, APP_VERSION);
+    } catch {
+      left.push(item);
+    }
+  }
+  safeSet(FEEDBACK_QUEUE, JSON.stringify(left));
+}
+
+window.addEventListener('resize', () => tab === 'perform' && renderPerform());
+
+
+if (localStorage.getItem(TAB_KEY) === 'perform') setTab('perform');

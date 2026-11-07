@@ -14,6 +14,8 @@ export interface StoredDoc {
   updatedAt: number;
   /** Onde a pessoa parou: rolagem como fração da altura das páginas. */
   view?: { scroll: number };
+  /** Leitura da partitura (compassos, fórmula, andamento) revisada pela pessoa. */
+  reading?: unknown;
 }
 
 const DB = 'music-wiss-docs';

@@ -14,6 +14,39 @@ export interface DocPage {
   height: number;
   /** Desenha a página num canvas com a largura dada (em pixels CSS). */
   render(canvas: HTMLCanvasElement, cssWidth: number): Promise<void>;
+  /** Texto da página (só PDF digital), em pontos com y para baixo. */
+  text?(): Promise<Array<{ str: string; x: number; y: number; w: number; h: number }>>;
+  /** Como a página é feita: área coberta por imagens (0–1) e quantos desenhos vetoriais tem. */
+  inspect?(): Promise<{ imageArea: number; vectorOps: number }>;
+}
+
+/** Limites para abrir: arquivos maiores travariam o navegador no celular. */
+export const MAX_DOC_BYTES = 60 * 1024 * 1024;
+export const MAX_DOC_PAGES = 200;
+
+/** Erro com mensagem pronta para mostrar. */
+export class DocError extends Error {
+  constructor(
+    public code: 'too-big' | 'too-many-pages' | 'password' | 'invalid' | 'empty' | 'unknown-type' | 'image',
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+const mb = (n: number) => `${Math.round(n / 1024 / 1024)} MB`;
+
+/** Traduz os erros do pdf.js em mensagens claras. */
+export function pdfError(err: unknown): DocError {
+  const name = (err as { name?: string })?.name ?? '';
+  const msg = String((err as { message?: string })?.message ?? err);
+  if (name === 'PasswordException' || /password/i.test(msg)) {
+    return new DocError('password', 'Este PDF está protegido por senha. Abra no leitor de PDF, salve uma cópia sem senha e tente de novo.');
+  }
+  if (name === 'InvalidPDFException' || name === 'FormatError' || /invalid pdf|bad xref|structure/i.test(msg)) {
+    return new DocError('invalid', 'Este arquivo não é um PDF válido ou está corrompido. Tente exportar o PDF de novo.');
+  }
+  return new DocError('invalid', `Não consegui abrir este PDF (${msg.slice(0, 80)}).`);
 }
 
 export interface OpenDocument {
@@ -46,11 +79,25 @@ export function imageType(bytes: Uint8Array): string | null {
 }
 
 export async function openDocument(name: string, bytes: Uint8Array): Promise<OpenDocument> {
+  if (!bytes.length) throw new DocError('empty', 'O arquivo está vazio.');
+  if (bytes.length > MAX_DOC_BYTES) throw new DocError('too-big', `Arquivo grande demais (${mb(bytes.length)}). O limite é ${mb(MAX_DOC_BYTES)}: divida o PDF ou reduza a resolução.`);
   if (isPdf(bytes)) {
     const lib = await pdfjs();
     // o pdf.js fica com o buffer: passa uma cópia
     const loading = lib.getDocument({ data: bytes.slice() });
-    const doc = await loading.promise;
+    let doc: Awaited<typeof loading.promise>;
+    try {
+      doc = await loading.promise;
+    } catch (err) {
+      void loading.destroy();
+      throw pdfError(err);
+    }
+    if (!doc.numPages) throw new DocError('empty', 'Este PDF não tem páginas.');
+    if (doc.numPages > MAX_DOC_PAGES) {
+      void loading.destroy();
+      throw new DocError('too-many-pages', `PDF com ${doc.numPages} páginas: o limite é ${MAX_DOC_PAGES}. Separe só a música que você vai ler.`);
+    }
+    const OPS = lib.OPS;
     const pages: DocPage[] = [];
     for (let i = 1; i <= doc.numPages; i++) {
       const page = await doc.getPage(i);
@@ -75,17 +122,55 @@ export async function openDocument(name: string, bytes: Uint8Array): Promise<Ope
             if ((err as { name?: string })?.name !== 'RenderingCancelledException') throw err;
           }
         },
+        async text() {
+          const content = await page.getTextContent();
+          const out: Array<{ str: string; x: number; y: number; w: number; h: number }> = [];
+          for (const it of content.items) {
+            if (!('str' in it) || !it.str.trim()) continue;
+            const [a, b, c, d, e, f] = it.transform as number[];
+            const [x, y] = vp.convertToViewportPoint(e, f);
+            const h = it.height || Math.hypot(c, d) || Math.hypot(a, b);
+            out.push({ str: it.str, x, y, w: it.width, h });
+          }
+          return out;
+        },
+        async inspect() {
+          // acompanha a matriz de transformação até cada imagem desenhada
+          const ops = await page.getOperatorList();
+          let ctm = [1, 0, 0, 1, 0, 0];
+          const stack: number[][] = [];
+          let area = 0;
+          let vectorOps = 0;
+          const mul = (m: number[], n: number[]) => [
+            n[0] * m[0] + n[1] * m[2],
+            n[0] * m[1] + n[1] * m[3],
+            n[2] * m[0] + n[3] * m[2],
+            n[2] * m[1] + n[3] * m[3],
+            n[4] * m[0] + n[5] * m[2] + m[4],
+            n[4] * m[1] + n[5] * m[3] + m[5],
+          ];
+          for (let k = 0; k < ops.fnArray.length; k++) {
+            const fn = ops.fnArray[k];
+            if (fn === OPS.save) stack.push(ctm);
+            else if (fn === OPS.restore) ctm = stack.pop() ?? [1, 0, 0, 1, 0, 0];
+            else if (fn === OPS.transform) ctm = mul(ctm, ops.argsArray[k] as number[]);
+            else if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject || fn === OPS.paintImageXObjectRepeat) {
+              area += Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2]) / (vp.width * vp.height);
+            } else if (fn === OPS.constructPath) vectorOps++;
+          }
+          return { imageArea: Math.min(1, area), vectorOps };
+        },
       });
     }
     return { name, kind: 'pdf', pages, destroy: () => void loading.destroy() };
   }
   const type = imageType(bytes);
-  if (!type) throw new Error('Abra um PDF, uma imagem (JPG/PNG), um MIDI ou um MusicXML');
+  if (!type) throw new DocError('unknown-type', 'Abra um PDF, uma imagem (JPG/PNG), um MIDI ou um MusicXML');
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
   const img = new Image();
   img.src = url;
   await img.decode().catch(() => {
-    throw new Error('Não consegui ler esta imagem');
+    throw new DocError('image', 'Não consegui ler esta imagem (arquivo estragado ou formato não suportado).');
   });
   return {
     name,

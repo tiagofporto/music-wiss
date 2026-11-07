@@ -132,6 +132,10 @@ Botão do metrônomo no topo, ou **Ctrl+Shift+M**. O painel fica aberto ao lado 
 
 Os cliques seguem as mudanças de compasso e as repetições da partitura. As preferências ficam salvas no aparelho. A lógica está em `src/audio/metronome.ts`, com testes em `tests/metronome.test.ts`.
 
+## Ler PDF e tocar com metrônomo (aba Editar)
+
+Abra um PDF ou uma foto de partitura e clique em **Ler e tocar com metrônomo**. O app acha pautas, barras de compasso, fórmula e andamento. Em PDF digital acha também notas e pausas. Você revisa o que foi lido e corrige os trechos destacados. Depois toca com metrônomo, com o compasso atual destacado na página, seguindo as mudanças de andamento ou num BPM fixo. Tudo roda no navegador, sem custo. Detalhes, limitações e arquitetura estão em [docs/leitura-pdf.md](docs/leitura-pdf.md).
+
 ## Som e teclado MIDI
 
 O botão **Som** abre o painel de áudio:

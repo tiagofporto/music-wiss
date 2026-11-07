@@ -18,6 +18,9 @@ export interface NoteRequest {
  * Motor de som: um canal por instrumento (volume e mudo) e volume geral.
  * Toca com o SoundFont carregado, se houver; senão, com timbres sintetizados.
  */
+/** Canal de mixagem do metrônomo. */
+export const METRO_BUS = '__metro';
+
 export class AudioEngine {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
@@ -165,6 +168,37 @@ export class AudioEngine {
       osc.start(start);
       osc.stop(stopAt);
     }
+  }
+
+  /**
+   * Clique do metrônomo (canal próprio "__metro", com volume próprio).
+   * O 1º tempo é mais agudo e forte; as subdivisões, mais suaves.
+   */
+  click(when: number, level: 'accent' | 'beat' | 'sub'): void {
+    const ctx = this.ensure();
+    const dest = this.session(METRO_BUS);
+    const t = Math.max(when, ctx.currentTime);
+    const [freq, peak] = level === 'accent' ? [1760, 0.9] : level === 'beat' ? [1245, 0.62] : [988, 0.3];
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + 0.002);
+    env.gain.exponentialRampToValueAtTime(0.001, t + (level === 'sub' ? 0.04 : 0.065));
+    env.connect(dest);
+    // corpo (seno) + estalo (quadrada curtinha), parecido com um bloco de madeira
+    const body = ctx.createOscillator();
+    body.frequency.value = freq;
+    body.connect(env);
+    const tick = ctx.createOscillator();
+    tick.type = 'square';
+    tick.frequency.value = freq * 2.01;
+    const tg = ctx.createGain();
+    tg.gain.setValueAtTime(0.12, t);
+    tg.gain.exponentialRampToValueAtTime(0.001, t + 0.012);
+    tick.connect(tg).connect(env);
+    body.start(t);
+    tick.start(t);
+    body.stop(t + 0.09);
+    tick.stop(t + 0.02);
   }
 
   /** Para tudo o que está tocando ou agendado. */

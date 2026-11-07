@@ -1393,13 +1393,17 @@ select {
 .icon-btn > span, .brand span { white-space: nowrap; }
 @media (max-width: 1360px) { .topbar [data-act="palette"] .kbd { display: none; } }
 /* barra do topo: em telas menores, os botões secundários ficam só com ícone (o nome aparece ao passar o mouse) */
-@media (max-width: 1480px) {
+@media (max-width: 1720px) {
   .topbar > :is([data-act="palette"], .mark-btn, [data-act="assistant"], [data-act="sound"]) > span:not(.midi-led) { display: none; }
   .topbar > :is([data-act="palette"], .mark-btn, [data-act="assistant"], [data-act="sound"]) { padding: 0 10px; }
 }
-@media (max-width: 1100px) {
+@media (max-width: 1360px) {
   .topbar > :is([data-act="new"], [data-act="library"], .cloud-btn) > span:not(.cloud-dot), .topbar .menu > .icon-btn > span { display: none; }
   .topbar > :is([data-act="new"], [data-act="library"], .cloud-btn), .topbar .menu > .icon-btn { padding: 0 10px; }
+}
+.topbar > .metro-btn { padding: 0 10px; }
+@media (max-width: 1000px) { .brand span { display: none; } .topbar { gap: 8px; padding: 10px 12px; } }
+@media (max-width: 1100px) {
   .tab span { display: none; }
   .tab { padding: 0 10px; }
 }
@@ -1961,3 +1965,91 @@ p { text-wrap: pretty; }
   .lib-seg button { flex-direction: column; gap: 2px; font-size: 11.5px; }
   .lib-cta { flex-direction: column; align-items: stretch; }
 }
+
+/* ---------- metrônomo ---------- */
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.metro-btn { position: relative; }
+.metro-btn.on { color: var(--brass); border-color: color-mix(in srgb, var(--brass) 45%, var(--line)); }
+.metro-btn .metro-led { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--brass); box-shadow: 0 0 0 2px var(--paper); }
+.metro-btn.tick .metro-led { animation: metro-led 0.18s ease-out; }
+.metro-btn.tick.accent .metro-led { animation-duration: 0.26s; background: var(--brass-hi); }
+@keyframes metro-led { from { transform: scale(1.9); box-shadow: 0 0 0 2px var(--paper), 0 0 14px var(--brass-hi); } to { transform: scale(1); } }
+.edit-mode .metro-btn, .at-home .metro-btn, .perform-mode .metro-btn,
+.edit-mode .metro-panel, .at-home .metro-panel, .perform-mode .metro-panel,
+.edit-mode .metro-count, .at-home .metro-count, .perform-mode .metro-count { display: none !important; }
+
+.metro-panel {
+  position: fixed;
+  right: 18px;
+  bottom: 88px;
+  z-index: 40;
+  width: 316px;
+  max-height: calc(100vh - 170px);
+  overflow-y: auto;
+  padding: 14px 16px 16px;
+  border-radius: 20px;
+  background: var(--dock);
+  color: var(--dock-ink);
+  box-shadow: 0 22px 60px rgb(0 0 0 / 32%);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  overflow-x: hidden;
+  animation: metro-in 0.28s var(--ease-out);
+}
+.metro-panel[hidden] { display: none; }
+@keyframes metro-in { from { opacity: 0; transform: translateY(12px) scale(0.98); } }
+.metro-head { display: flex; align-items: center; gap: 8px; }
+.metro-head h2 { display: flex; align-items: center; gap: 8px; margin: 0; font: 600 15px var(--font-display); flex: 1; }
+.metro-head h2 svg { width: 18px; height: 18px; color: var(--brass); }
+.metro-head .lib-icon { color: var(--dock-muted); background: none; border: 0; cursor: pointer; padding: 4px; border-radius: 8px; }
+.metro-head .lib-icon:hover { color: var(--dock-ink); background: rgb(255 255 255 / 8%); }
+.metro-switch { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dock-muted); cursor: pointer; }
+.metro-switch input, .metro-check input { accent-color: var(--brass); width: 16px; height: 16px; }
+.metro-beats { display: flex; justify-content: center; gap: 10px; min-height: 16px; }
+.metro-beats i { width: 12px; height: 12px; border-radius: 50%; background: rgb(255 255 255 / 12%); transition: background 0.25s, transform 0.25s, box-shadow 0.25s; }
+.metro-beats i.first { width: 16px; height: 16px; margin-top: -2px; }
+.metro-beats i.on { background: var(--dock-ink); transform: scale(1.15); transition-duration: 0s; }
+.metro-beats i.first.on { background: var(--brass-hi); box-shadow: 0 0 16px var(--brass); }
+.metro-tempo { display: grid; grid-template-columns: 44px 1fr 44px; align-items: center; gap: 8px; }
+.metro-step { height: 44px; border-radius: 14px; border: 1px solid rgb(255 255 255 / 14%); background: rgb(255 255 255 / 6%); color: var(--dock-ink); font: 600 22px var(--font-display); cursor: pointer; }
+.metro-step:hover { background: rgb(255 255 255 / 12%); }
+.metro-read { text-align: center; line-height: 1; }
+.metro-bpm { display: block; font: 700 46px/1 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.metro-unit { color: var(--dock-muted); font-size: 12px; }
+.metro-range { width: 100%; accent-color: var(--brass); }
+.metro-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--dock-muted); }
+.metro-row .icon-btn, .metro-actions .icon-btn:not(.primary) { background: rgb(255 255 255 / 8%); color: var(--dock-ink); border-color: rgb(255 255 255 / 14%); }
+.metro-row .link-btn { color: var(--brass-hi); font-size: 12px; }
+.metro-patterns { display: flex; flex-wrap: wrap; gap: 6px; }
+.metro-patterns button { padding: 6px 10px; border-radius: 999px; border: 1px solid rgb(255 255 255 / 14%); background: none; color: var(--dock-ink); font: 500 12px var(--font-ui); cursor: pointer; }
+.metro-patterns button:hover { background: rgb(255 255 255 / 8%); }
+.metro-patterns button[aria-checked="true"] { background: var(--brass); border-color: var(--brass); color: var(--brass-ink); font-weight: 700; }
+.metro-vol { display: flex; align-items: center; gap: 10px; color: var(--dock-muted); }
+.metro-vol svg { width: 18px; height: 18px; flex: none; }
+.metro-vol input { flex: 1; accent-color: var(--brass); }
+.metro-check { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; cursor: pointer; }
+.metro-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.metro-actions .icon-btn { min-width: 0; padding-inline: 8px; white-space: normal; text-align: center; line-height: 1.2; }
+.metro-actions .icon-btn { justify-content: center; }
+.metro-actions .icon-btn.playing { background: var(--brass); color: var(--brass-ink); border-color: var(--brass); }
+.metro-status { margin: 0; font-size: 12px; color: var(--dock-muted); line-height: 1.45; }
+.metro-panel :focus-visible { outline: 2px solid var(--brass-hi); outline-offset: 2px; }
+
+.metro-count {
+  position: fixed; inset: 0; z-index: 45; pointer-events: none;
+  display: grid; place-items: center;
+  font: 800 min(36vw, 260px)/1 var(--font-display); color: var(--brass);
+  opacity: 0; text-shadow: 0 10px 50px rgb(0 0 0 / 18%);
+}
+.metro-count.show { opacity: 0.85; }
+.metro-count.pop { animation: metro-pop 0.45s var(--ease-out); }
+@keyframes metro-pop { from { transform: scale(1.35); opacity: 1; } to { transform: scale(1); } }
+
+@media (max-width: 760px) {
+  .metro-panel { left: 10px; right: 10px; width: auto; bottom: 84px; max-height: calc(100vh - 150px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .metro-panel, .metro-count.pop, .metro-btn.tick .metro-led { animation: none; }
+}
+.metro-actions .icon-btn svg { flex: none; width: 16px; height: 16px; }

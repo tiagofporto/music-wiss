@@ -34,5 +34,6 @@ export const ICON = {
   trash: svg('<path d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 002 2h6a2 2 0 002-2l1-12M9 7V4h6v3"/>'),
   drive: svg('<path d="M8.5 4h7l6 10.5-3.5 6h-12L2.5 14.5z"/><path d="M8.5 4l6 10.5M15.5 4l-6 10.5M2.5 14.5h19M6 20.5l3.5-6"/>'),
   cloudUp: svg('<path d="M7 18h10a4 4 0 00.6-7.95A6 6 0 006.2 9.1 4.5 4.5 0 007 18z"/><path d="M12 16v-5M9.5 13.5L12 11l2.5 2.5"/>'),
+  metronome: svg('<path d="M9.5 3h5l4 18h-13z"/><path d="M6.5 16h11M12 16l5-10"/><circle cx="17" cy="6" r="1.2" fill="currentColor"/>'),
   copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h2"/>'),
 };

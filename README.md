@@ -118,6 +118,20 @@ O botão **mais** na barra de baixo abre o painel de expressão (também tem tud
 
 Tudo isso vai e volta pelo MusicXML (`<dynamics>`, `<articulations>`, `<lyric>`, `<harmony>`, `<repeat>`, `<ending>`).
 
+## Metrônomo (abas Escrever e Editar)
+
+Botão do metrônomo no topo, ou **Ctrl+Shift+M**. O painel fica aberto ao lado da partitura:
+
+- **Andamento** de 30 a 240 batidas por minuto: botões −/+ (de 5 em 5), barra deslizante ou **Toque no ritmo** (toque 4 vezes ou mais). Mostra quanto é da partitura (ex.: 80%) e **Voltar ao original**. O andamento de estudo não muda a partitura.
+- **Padrões**: Tempos, Só o 1º, Colcheias, Tercinas, Semicolcheias e Contratempo. O 1º tempo é mais forte; em 6/8, 9/8 e 12/8 o clique segue a semínima pontuada.
+- **Volume** próprio do metrônomo, separado dos instrumentos.
+- **Praticar a leitura**: conta um compasso antes (número grande na tela) e o cursor anda nota a nota junto com o clique, a partir de onde ele está. Desligue "Tocar as notas da partitura" para ouvir só os cliques e tocar você mesmo.
+- **Junto com Ouvir**: os cliques tocam sempre que você aperta Ouvir (Espaço).
+- **Só o metrônomo**: clique contínuo na fórmula de compasso do cursor.
+- **Na aba Editar** (PDF e fotos): o mesmo painel, com escolha do compasso (2/4 a 12/8) e andamento próprios. **Começar a ler** conta um compasso e depois mostra o número do compasso em que você está.
+
+Os cliques seguem as mudanças de compasso e as repetições da partitura. As preferências ficam salvas no aparelho. A lógica está em `src/audio/metronome.ts`, com testes em `tests/metronome.test.ts`.
+
 ## Som e teclado MIDI
 
 O botão **Som** abre o painel de áudio:

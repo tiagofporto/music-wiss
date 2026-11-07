@@ -1,10 +1,12 @@
 import './ui/style.css';
 import { Editor, TUPLET_NORMAL } from './editor/editor';
-import { AudioEngine } from './audio/engine';
+import { AudioEngine, METRO_BUS } from './audio/engine';
 import { connectMidi } from './input/midi-input';
 import type { MidiNote } from './input/midi-input';
 import { loadStoredSoundFont, storeSoundFont, forgetSoundFont } from './audio/soundfont-store';
 import { schedule } from './audio/sequencer';
+import type { MetroSettings } from './audio/metronome';
+import { atTempo, buildClicks, clampBpm, DOC_TIME_SIGNATURES, freeBar, MAX_BPM, MIN_BPM, parseSettings, parseTimeSig, PATTERNS, tapTempo } from './audio/metronome';
 import { DURATION_NAMES_PT, DURATION_ORDER } from './model/duration';
 import type { Fifths } from './model/key';
 import { keyName } from './model/key';
@@ -117,6 +119,7 @@ app.innerHTML = `
     <button class="icon-btn cloud-btn" data-act="cloud" title="Nuvem: conta, partituras e compartilhar">${ICON.cloud}<span>Nuvem</span><span class="cloud-dot" hidden></span></button>
     <button class="icon-btn" data-act="sound" title="Som, volumes e teclado MIDI">${ICON.speaker}<span>Som</span><span class="midi-led" hidden></span></button>
     <button class="icon-btn" data-act="theme" title="Tema claro/escuro"></button>
+    <button class="icon-btn metro-btn" data-act="metro" aria-expanded="false" aria-controls="metro-panel" title="Metrônomo: andamento, compasso, padrões e praticar a leitura (Ctrl+Shift+M)">${ICON.metronome}<span class="sr-only">Metrônomo</span><span class="metro-led" hidden></span></button>
     <button class="icon-btn primary" data-act="play" title="Ouvir a partitura (Espaço)"></button>
   </header>
 
@@ -327,6 +330,40 @@ app.innerHTML = `
       <div class="dialog-actions"><button type="button" class="icon-btn" data-close>Fechar</button></div>
     </div>
   </div>
+  <aside class="metro-panel" id="metro-panel" hidden aria-labelledby="metro-h">
+    <header class="metro-head">
+      <h2 id="metro-h">${ICON.metronome}Metrônomo</h2>
+      <label class="metro-switch" data-only="write" title="Os cliques tocam junto quando você aperta Ouvir (Espaço)"><input type="checkbox" data-metro="on" /><span>Junto com Ouvir</span></label>
+      <button type="button" class="lib-icon" data-act="metro-close" aria-label="Fechar o metrônomo" title="Fechar"><span aria-hidden="true" style="font-size:20px;line-height:1">×</span></button>
+    </header>
+    <div class="metro-beats" aria-hidden="true"></div>
+    <p class="metro-barno" data-only="edit" aria-live="off"></p>
+    <div class="metro-tempo">
+      <button type="button" class="metro-step" data-act="metro-bpm" data-d="-5" aria-label="Mais devagar (−5)">−</button>
+      <div class="metro-read"><output class="metro-bpm" aria-live="polite">96</output><small class="metro-unit">batidas por minuto</small></div>
+      <button type="button" class="metro-step" data-act="metro-bpm" data-d="5" aria-label="Mais rápido (+5)">+</button>
+    </div>
+    <input class="metro-range" type="range" min="${MIN_BPM}" max="${MAX_BPM}" step="1" data-metro="bpm" aria-label="Andamento em batidas por minuto" />
+    <div class="metro-row">
+      <button type="button" class="icon-btn small" data-act="metro-tap" title="Toque no ritmo (4 vezes ou mais) para achar o andamento">Toque no ritmo</button>
+      <span class="metro-score-tempo"></span>
+    </div>
+    <label class="metro-ts" data-only="edit"><span>Compasso da partitura</span>
+      <select data-metro="docTs" aria-label="Fórmula de compasso da partitura aberta">${DOC_TIME_SIGNATURES.map((t) => `<option value="${t}">${t}</option>`).join('')}</select>
+    </label>
+    <div class="metro-patterns" role="radiogroup" aria-label="Padrão rítmico">
+      ${PATTERNS.map((p) => `<button type="button" role="radio" aria-checked="false" data-act="metro-pattern" data-p="${p.id}" title="${p.hint}">${p.name}</button>`).join('')}
+    </div>
+    <label class="metro-vol">${ICON.speaker}<span class="sr-only">Volume do metrônomo</span><input type="range" min="0" max="1" step="0.05" data-metro="volume" aria-label="Volume do metrônomo" /></label>
+    <label class="metro-check"><input type="checkbox" data-metro="countIn" /><span>Contar um compasso antes de começar</span></label>
+    <label class="metro-check" data-only="write"><input type="checkbox" data-metro="withScore" /><span>Tocar as notas da partitura (desligue para você tocar)</span></label>
+    <div class="metro-actions">
+      <button type="button" class="icon-btn primary" data-only="write" data-act="metro-practice">${ICON.play}<span>Praticar a leitura</span></button>
+      <button type="button" class="icon-btn" data-act="metro-free">${ICON.metronome}<span>Só o metrônomo</span></button>
+    </div>
+    <p class="metro-status" role="status"></p>
+  </aside>
+  <div class="metro-count" aria-hidden="true"></div>
   <div class="overlay" data-overlay="library" hidden>
     <div class="panel dialog library-panel" role="dialog" aria-modal="true" aria-labelledby="lib-h">
       <div class="library-head">
@@ -489,10 +526,13 @@ function syncMixer(score: Score = editor.score) {
   for (const part of score.parts) engine.setBus(part.id, part.volume ?? 0.8, part.muted);
 }
 
-function togglePlay() {
+function togglePlay(practice = false) {
+  if (metroFree) stopFree();
   if (playing) return stopPlayback();
   const stage = tab === 'perform';
-  const score = stage ? stageScore() : editor.score;
+  const metroOn = !stage && (practice || metro.on);
+  const base = stage ? stageScore() : editor.score;
+  const score = base && metroOn ? atTempo(base, metro.bpm) : base;
   if (!score) return toast('PDF e foto não têm som. Para ouvir, carregue MusicXML ou MIDI, ou use “Ler com IA” em Editar.');
   const atEnd = editor.cursor >= editor.events().length;
   const from = stage || atEnd ? Fraction.ZERO : editor.cursorTime();
@@ -501,9 +541,13 @@ function togglePlay() {
   syncMixer(score);
   playingStage = stage;
   const parts = score.parts;
-  const t0 = engine.now() + 0.08;
-  for (const n of notes) {
-    engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * n.gate, velocity: n.velocity });
+  const metroPlan = metroOn ? buildClicks(score, { from, bpm: score.tempo, pattern: metro.pattern, countIn: metro.countIn }) : null;
+  const lead = metroPlan?.leadIn ?? 0;
+  const t0 = engine.now() + 0.08 + lead;
+  if (!metroPlan || metro.withScore) {
+    for (const n of notes) {
+      engine.play({ bus: parts[n.partIndex].id, program: n.program, midi: n.midi, when: t0 + n.start, duration: n.duration * n.gate, velocity: n.velocity });
+    }
   }
   const state = { timers: [] as number[], time: null as number | null };
   playing = state;
@@ -512,9 +556,18 @@ function togglePlay() {
       if (playing !== state) return;
       state.time = step.time;
       render();
-    }, (step.at + 0.08) * 1000));
+    }, (lead + step.at + 0.08) * 1000));
   }
-  state.timers.push(window.setTimeout(stopPlayback, (total + 0.4) * 1000));
+  if (metroPlan) {
+    engine.setBus(METRO_BUS, metro.volume);
+    for (const c of metroPlan.clicks) {
+      engine.click(t0 + c.at, c.level);
+      if (c.level === 'sub') continue;
+      state.timers.push(window.setTimeout(() => playing === state && metroTick(c.beat, c.beats, c.measure < 0), (lead + c.at + 0.08) * 1000));
+    }
+    state.timers.push(window.setTimeout(() => playing === state && metroTick(-1, 0, false), (lead + Math.max(total, metroPlan.total) + 0.1) * 1000));
+  }
+  state.timers.push(window.setTimeout(stopPlayback, (lead + Math.max(total, metroPlan?.total ?? 0) + 0.4) * 1000));
   updatePlayButton();
   render();
 }
@@ -524,6 +577,7 @@ function stopPlayback() {
   playing.timers.forEach((t) => clearTimeout(t));
   playing = null;
   engine.stopAll();
+  metroTick(-1, 0, false);
   updatePlayButton();
   render();
 }
@@ -559,6 +613,10 @@ function onKey(e: KeyboardEvent) {
   if (mod && e.shiftKey && e.key.toLowerCase() === 'e') {
     e.preventDefault();
     return setTab(tab === 'edit' ? 'write' : 'edit');
+  }
+  if (mod && e.shiftKey && e.key.toLowerCase() === 'm' && (tab === 'write' || tab === 'edit')) {
+    e.preventDefault();
+    return toggleMetroPanel();
   }
   if (tab === 'perform') return onPerformKey(e, mod);
   if (tab === 'edit' && !docView) {
@@ -673,6 +731,7 @@ function commands(): Command[] {
     { id: 'mode', label: editor.inputMode ? 'Sair do modo de escrita' : 'Entrar no modo de escrita', hint: 'N', run: () => editor.toggleInputMode() },
     { id: 'play', label: playing ? 'Parar reprodução' : 'Ouvir a partir do cursor', hint: 'Espaço', run: togglePlay },
     { id: 'library', label: 'Minhas partituras: ver, abrir e apagar…', hint: 'Ctrl Shift O', run: () => void openLibrary() },
+    { id: 'metro', label: 'Metrônomo: andamento, padrões e praticar a leitura', hint: 'Ctrl Shift M', run: () => toggleMetroPanel(true) },
     { id: 'tab-perform', label: tab === 'perform' ? 'Voltar para Escrever' : 'Tocar: partitura limpa e tela cheia', hint: 'Ctrl Shift P', run: () => setTab(tab === 'perform' ? 'write' : 'perform') },
     { id: 'events', label: 'Eventos: salvar esta partitura num repertório', run: () => { setTab('perform'); void toggleEvents(true); } },
     { id: 'new', label: 'Nova partitura…', run: () => openOverlay('new') },
@@ -1019,6 +1078,19 @@ app.addEventListener('click', (e) => {
   switch (el.dataset.act) {
     case 'mode': return editor.toggleInputMode();
     case 'play': return togglePlay();
+    case 'metro': return toggleMetroPanel();
+    case 'metro-close': return toggleMetroPanel(false);
+    case 'metro-bpm': return setMetroBpm(metroBpm() + Number(el.dataset.d));
+    case 'metro-tap': return metroTap();
+    case 'metro-reset': return setMetroBpm(null);
+    case 'metro-pattern': metro.pattern = el.dataset.p as MetroSettings['pattern']; return saveMetro();
+    case 'metro-practice':
+      stopFree();
+      if (playing) stopPlayback();
+      // no celular o painel cobre a partitura: fecha para ver o cursor
+      if (matchMedia('(max-width: 760px)').matches) toggleMetroPanel(false);
+      return togglePlay(true);
+    case 'metro-free': return metroFree ? stopFree() : startFree();
     case 'new': return openOverlay('new');
     case 'palette': return openPalette();
     case 'sound': return openSound();
@@ -2889,6 +2961,7 @@ function setTab(next: Tab) {
   });
   window.scrollTo(0, 0);
   positionTabInk();
+  if (metroReady) metroOnTab();
   if (tab === 'perform') renderPerform();
   else if (tab === 'home') void renderHome();
   else if (tab === 'edit') {
@@ -4104,3 +4177,209 @@ async function acctDelete(id: string, title: string) {
 }
 
 if (drive.driveConfig()) setTimeout(() => void drive.prepareDrive().catch(() => undefined), 2500);
+
+
+// ---------------------------------------------------------------- metrônomo
+
+const METRO_KEY = 'music-wiss:metro';
+// var (não let): setTab pode ler isto antes desta seção rodar
+var metroReady = false;
+let metro: MetroSettings = parseSettings(safeGet(METRO_KEY));
+let metroFree: { timer: number; next: number; beats: number[]; bar: number } | null = null;
+let metroTaps: number[] = [];
+const metroPanel = $<HTMLElement>('.metro-panel');
+const metroCount = $<HTMLElement>('.metro-count');
+
+/** Na aba Editar (PDF/foto) não há partitura escrita: andamento e compasso são escolhidos à mão. */
+const metroDoc = () => tab === 'edit';
+
+/** Andamento em uso: o de estudo, o da partitura ou o escolhido para o PDF. */
+function metroBpm(): number {
+  if (metroDoc()) return metro.docBpm;
+  return metro.bpm ?? editor.score.tempo;
+}
+
+function saveMetro() {
+  safeSet(METRO_KEY, JSON.stringify(metro));
+  renderMetro();
+}
+
+function setMetroBpm(v: number | null) {
+  if (metroDoc()) {
+    metro.docBpm = clampBpm(v ?? 80);
+    return saveMetro();
+  }
+  metro.bpm = v === null ? null : clampBpm(v);
+  if (metro.bpm === editor.score.tempo) metro.bpm = null;
+  saveMetro();
+}
+
+function toggleMetroPanel(open = metroPanel.hidden) {
+  if (open && tab !== 'write' && tab !== 'edit') setTab('write');
+  metroPanel.hidden = !open;
+  $('.topbar [data-act="metro"]').setAttribute('aria-expanded', String(open));
+  if (open) {
+    renderMetro();
+    metroPanel.querySelector<HTMLElement>('.metro-step')?.focus({ preventScroll: true });
+  }
+}
+
+/** Uma pulsação: acende o tempo no painel, pisca o botão e mostra a contagem. */
+function metroTick(beat: number, beats: number, counting: boolean) {
+  const dots = metroPanel.querySelectorAll<HTMLElement>('.metro-beats i');
+  if (beats && dots.length !== beats) renderBeatDots(beats);
+  metroPanel.querySelectorAll<HTMLElement>('.metro-beats i').forEach((d, i) => d.classList.toggle('on', i === beat));
+  const btn = $('.topbar [data-act="metro"]');
+  btn.classList.toggle('accent', beat === 0);
+  if (beat >= 0) {
+    btn.classList.remove('tick');
+    void btn.offsetWidth;
+    btn.classList.add('tick');
+  } else btn.classList.remove('tick', 'accent');
+  metroCount.textContent = counting ? String(beat + 1) : '';
+  metroCount.classList.toggle('show', counting);
+  if (counting) {
+    metroCount.classList.remove('pop');
+    void metroCount.offsetWidth;
+    metroCount.classList.add('pop');
+  }
+}
+
+function renderBeatDots(n: number) {
+  metroPanel.querySelector('.metro-beats')!.innerHTML = Array.from({ length: n }, (_, i) => `<i class="${i === 0 ? 'first' : ''}"></i>`).join('');
+}
+
+function currentTimeSig() {
+  if (metroDoc()) return parseTimeSig(metro.docTs);
+  return effectiveTimeSignature(editor.score, editor.cursorMeasure());
+}
+
+function renderMetro() {
+  const bpm = metroBpm();
+  const ts = currentTimeSig();
+  $('.topbar [data-act="metro"]').classList.toggle('on', metro.on || !!metroFree);
+  $('.topbar .metro-led').hidden = !(metro.on || metroFree);
+  if (metroPanel.hidden) return;
+  metroPanel.querySelector('.metro-bpm')!.textContent = String(bpm);
+  const range = metroPanel.querySelector<HTMLInputElement>('[data-metro="bpm"]')!;
+  range.value = String(bpm);
+  range.style.setProperty('--p', `${((bpm - MIN_BPM) / (MAX_BPM - MIN_BPM)) * 100}%`);
+  const pct = Math.round((bpm / editor.score.tempo) * 100);
+  metroPanel.querySelector<HTMLSelectElement>('[data-metro="docTs"]')!.value = metro.docTs;
+  metroPanel.querySelector('.metro-score-tempo')!.innerHTML = metroDoc()
+    ? 'Ajuste ao andamento indicado na partitura'
+    : metro.bpm === null
+      ? `Andamento da partitura · ${ts.beats}/${ts.beatType}`
+      : `${pct}% da partitura (${editor.score.tempo}) · <button type="button" class="link-btn" data-act="metro-reset">Voltar ao original</button>`;
+  for (const b of metroPanel.querySelectorAll<HTMLElement>('[data-act="metro-pattern"]')) b.setAttribute('aria-checked', String(b.dataset.p === metro.pattern));
+  metroPanel.querySelector<HTMLInputElement>('[data-metro="volume"]')!.value = String(metro.volume);
+  metroPanel.querySelector<HTMLInputElement>('[data-metro="on"]')!.checked = metro.on;
+  metroPanel.querySelector<HTMLInputElement>('[data-metro="countIn"]')!.checked = metro.countIn;
+  metroPanel.querySelector<HTMLInputElement>('[data-metro="withScore"]')!.checked = metro.withScore;
+  const free = metroPanel.querySelector<HTMLElement>('[data-act="metro-free"]')!;
+  const startLabel = metroDoc() ? 'Começar a ler' : 'Só o metrônomo';
+  free.innerHTML = metroFree ? `${ICON.stop}<span>Parar o metrônomo</span>` : `${metroDoc() ? ICON.play : ICON.metronome}<span>${startLabel}</span>`;
+  free.classList.toggle('playing', !!metroFree);
+  free.classList.toggle('primary', metroDoc() && !metroFree);
+  if (!metroPanel.querySelector('.metro-beats i')) renderBeatDots(beatsOfTs(ts));
+  metroPanel.querySelector('.metro-status')!.textContent = metroDoc()
+    ? 'Escolha o compasso e o andamento, aperte Começar e acompanhe a partitura aberta. O número do compasso aparece aqui.'
+    : metro.withScore
+    ? 'O cursor anda nota a nota com o clique, a partir de onde ele está.'
+    : 'Só os cliques tocam: você toca, e o cursor mostra a nota da vez.';
+}
+
+function beatsOfTs(ts: { beats: number; beatType: number }): number {
+  return ts.beatType >= 8 && ts.beats > 3 && ts.beats % 3 === 0 ? ts.beats / 3 : ts.beats;
+}
+
+metroPanel.addEventListener('input', (e) => {
+  const el = e.target as HTMLInputElement;
+  const k = el.dataset.metro;
+  if (k === 'bpm') return setMetroBpm(Number(el.value));
+  if (k === 'docTs') {
+    metro.docTs = el.value;
+    renderBeatDots(beatsOfTs(parseTimeSig(metro.docTs)));
+    return saveMetro();
+  }
+  if (k === 'volume') {
+    metro.volume = Number(el.value);
+    engine.setBus(METRO_BUS, metro.volume);
+    return saveMetro();
+  }
+  if (k === 'on' || k === 'countIn' || k === 'withScore') {
+    metro[k] = el.checked;
+    saveMetro();
+  }
+});
+
+/** Toque no ritmo: média dos toques dá o andamento. */
+function metroTap() {
+  const now = performance.now();
+  metroTaps = [...metroTaps.filter((t) => now - t < 8000), now].slice(-8);
+  engine.setBus(METRO_BUS, metro.volume);
+  engine.click(engine.now(), metroTaps.length === 1 ? 'accent' : 'beat');
+  const bpm = tapTempo(metroTaps);
+  if (bpm) setMetroBpm(bpm);
+}
+
+/** Metrônomo sozinho: agenda um compasso por vez, um pouco adiantado. */
+function startFree() {
+  if (playing) stopPlayback();
+  engine.setBus(METRO_BUS, metro.volume);
+  // com contagem, o primeiro compasso é só para entrar (números grandes na tela)
+  metroFree = { timer: 0, next: engine.now() + 0.1, beats: [], bar: metro.countIn ? 0 : 1 };
+  const run = () => {
+    if (!metroFree) return;
+    while (metroFree.next < engine.now() + 0.4) {
+      const start = metroFree.next;
+      const counting = metroFree.bar === 0;
+      const barNo = metroFree.bar;
+      const bar = freeBar(currentTimeSig(), metroBpm(), counting ? 'tempos' : metro.pattern);
+      for (const c of bar.clicks) {
+        engine.click(start + c.at, c.level);
+        if (c.level === 'sub') continue;
+        const ms = (start + c.at - engine.now()) * 1000;
+        metroFree.beats.push(window.setTimeout(() => {
+          if (!metroFree) return;
+          metroTick(c.beat, c.beats, counting);
+          if (c.beat === 0) showBarNo(barNo);
+        }, Math.max(0, ms)));
+      }
+      metroFree.next = start + bar.length;
+      metroFree.bar++;
+    }
+    if (metroFree.beats.length > 64) metroFree.beats = metroFree.beats.slice(-32);
+  };
+  run();
+  metroFree.timer = window.setInterval(run, 100);
+  renderMetro();
+}
+
+function stopFree() {
+  if (!metroFree) return;
+  clearInterval(metroFree.timer);
+  metroFree.beats.forEach((t) => clearTimeout(t));
+  metroFree = null;
+  engine.stopAll();
+  metroTick(-1, 0, false);
+  showBarNo(-1);
+  renderMetro();
+}
+
+function showBarNo(n: number) {
+  metroPanel.querySelector('.metro-barno')!.textContent = n < 0 ? '' : n === 0 ? 'Contando…' : `Compasso ${n}`;
+}
+
+/** Troca de aba: o painel segue em Escrever e Editar; nas outras o metrônomo para. */
+function metroOnTab() {
+  if (tab !== 'write' && tab !== 'edit') {
+    stopFree();
+    toggleMetroPanel(false);
+  }
+  renderBeatDots(beatsOfTs(currentTimeSig()));
+  renderMetro();
+}
+
+metroReady = true;
+renderMetro();

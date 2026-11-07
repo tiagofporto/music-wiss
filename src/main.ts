@@ -33,7 +33,9 @@ import { importMidi } from './io/midi-import';
 import type { Annotation, AnnotationTool, LayerState, TextRequest } from './annotate/annotations';
 import { ANNOTATION_COLORS, AnnotationLayer, STAMP_FONT_EMOJI, STAMP_FONT_MONO, STAMP_GROUPS, stampTakesColor } from './annotate/annotations';
 import type { OpenDocument } from './doc/document';
-import { exportAnnotatedPdf, imageType, isPdf, openDocument, pagesAsJpeg } from './doc/document';
+import { DocError, exportAnnotatedPdf, imageType, isPdf, MAX_DOC_BYTES, openDocument, pagesAsJpeg } from './doc/document';
+import { ReadingPanel } from './reading/ui';
+import type { ReadingMap } from './reading/model';
 import type { StoredDoc } from './doc/doc-store';
 import { deleteDoc, docId, listDocs, loadDoc, saveDoc } from './doc/doc-store';
 import type { Transcription } from './ai/transcription';
@@ -210,6 +212,7 @@ app.innerHTML = `
       <div class="doc-head">
         <div class="doc-name"></div>
         <div class="doc-actions">
+          <button class="icon-btn primary" data-act="doc-read" title="Achar compassos, fórmula e andamento, conferir e tocar com metrônomo (sem IA, de graça)">${ICON.metronome}<span>Ler e tocar com metrônomo</span></button>
           <button class="icon-btn" data-act="doc-analyze">${ICON.sparkle}<span>Ler e analisar com IA</span></button>
           <button class="icon-btn" data-act="doc-export">${ICON.download}<span>Baixar com marcações</span></button>
           <button class="icon-btn" data-act="doc-close" title="Fechar e voltar para a lista de documentos">Fechar documento</button>
@@ -954,6 +957,9 @@ async function openFile(file: File) {
   stopPlayback();
   const name = file.name.toLowerCase();
   try {
+    if (file.size > MAX_DOC_BYTES) {
+      throw new DocError('too-big', `Arquivo grande demais (${Math.round(file.size / 1048576)} MB). O limite é ${MAX_DOC_BYTES / 1048576} MB: divida o PDF ou reduza a resolução.`);
+    }
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (name.endsWith('.json')) {
       const data = JSON.parse(new TextDecoder().decode(bytes));
@@ -1138,6 +1144,7 @@ app.addEventListener('click', (e) => {
     case 'annot-done': return docView ? closeDocView() : toggleMarking(false);
     case 'docs': closeMenu(); return setTab('edit');
     case 'doc-open': return void reopenDoc(el.dataset.id!);
+    case 'doc-read': return toggleReader();
     case 'doc-forget': return void forgetDoc(el.dataset.id!);
     case 'doc-close': closeDocView(); return renderEditHome();
     case 'edit-load': return $<HTMLInputElement>('[data-file]').click();
@@ -2518,6 +2525,7 @@ const docPagesEl = $<HTMLElement>('.doc-pages');
 async function openDoc(name: string, bytes: Uint8Array) {
   stopPlayback();
   const opened = await openDocument(name, bytes);
+  reader?.reset();
   if (docView) flushDoc(); // grava o documento anterior antes de trocar
   doc?.destroy();
   doc = opened;
@@ -2562,6 +2570,7 @@ function showDocView(restore = false) {
 
 function closeDocView() {
   if (!docView) return;
+  reader?.reset();
   saveDocScroll();
   try {
     localStorage.removeItem(OPEN_DOC_KEY);
@@ -2621,6 +2630,7 @@ async function renderDocPages(keepScroll = false, restore = false) {
     layer.setActive(!annotHand);
     docLayers.push(layer);
   }
+  if (reader?.open) reader.decorate();
   if (ratio !== null) window.scrollTo(0, docTop() + ratio * docPagesEl.scrollHeight);
   else if (restore && stored.view) window.scrollTo(0, docTop() + stored.view.scroll * docPagesEl.scrollHeight);
   else window.scrollTo(0, 0);
@@ -2648,6 +2658,13 @@ function persistDoc(delay = 500) {
 }
 
 function onDocKey(e: KeyboardEvent, mod: boolean) {
+  if (reader?.open) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      return reader.hide();
+    }
+    if (e.key === ' ' && !mod && reader.key()) return e.preventDefault();
+  }
   if (mod && e.key.toLowerCase() === 'z') {
     e.preventDefault();
     return annotUndo();
@@ -2936,6 +2953,7 @@ function setTab(next: Tab) {
     if (eventsOpen) void toggleEvents(false);
   }
   if (tab === 'edit' && docView) closeDocView();
+  reader?.hide();
   if (next !== 'write') {
     if (marking) toggleMarking(false);
     if (editor.inputMode) editor.toggleInputMode(false);
@@ -4383,3 +4401,39 @@ function metroOnTab() {
 
 metroReady = true;
 renderMetro();
+
+
+// ---------------------------------------------------------------- ler e tocar (PDF/foto com metrônomo)
+
+// var (não let): setTab e openDoc podem rodar antes desta seção
+var reader: ReadingPanel | null = null;
+
+function getReader(): ReadingPanel {
+  if (reader) return reader;
+  reader = new ReadingPanel({
+    engine,
+    toast,
+    current: () => (doc && docStored ? { doc, map: (docStored.reading as ReadingMap | undefined) ?? null } : null),
+    save: (map) => {
+      if (!docStored) return;
+      docStored.reading = map ?? undefined;
+      persistDoc();
+    },
+    pages: () => [...docPagesEl.querySelectorAll<HTMLElement>('.doc-page')],
+    relayout: () => void renderDocPages(true),
+    countEl: $<HTMLElement>('.metro-count'),
+    stopOthers: () => {
+      stopFree();
+      if (playing) stopPlayback();
+    },
+  });
+  app.appendChild(reader.el);
+  return reader;
+}
+
+function toggleReader() {
+  const r = getReader();
+  if (r.open) r.hide();
+  else r.show();
+  $('[data-act="doc-read"]').setAttribute('aria-expanded', String(r.open));
+}

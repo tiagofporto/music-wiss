@@ -34,9 +34,22 @@ export interface MetroSettings {
   withScore: boolean;
   /** Metrônomo ligado ao apertar Ouvir. */
   on: boolean;
+  /** Aba Editar (PDF/foto, sem partitura escrita): andamento e compasso escolhidos à mão. */
+  docBpm: number;
+  docTs: string;
 }
 
-export const DEFAULT_SETTINGS: MetroSettings = { bpm: null, pattern: 'tempos', volume: 0.7, countIn: true, withScore: true, on: false };
+/** Fórmulas de compasso oferecidas para ler PDFs e fotos. */
+export const DOC_TIME_SIGNATURES = ['2/4', '3/4', '4/4', '2/2', '3/8', '6/8', '9/8', '12/8', '5/4', '7/8'];
+
+/** Lê "6/8" como fórmula de compasso (cai em 4/4 se for estranho). */
+export function parseTimeSig(v: string): TimeSignature {
+  const m = /^(\d{1,2})\/(1|2|4|8|16)$/.exec(v.trim());
+  const beats = m ? Number(m[1]) : 0;
+  return m && beats >= 1 && beats <= 16 ? { beats, beatType: Number(m[2]) } : { beats: 4, beatType: 4 };
+}
+
+export const DEFAULT_SETTINGS: MetroSettings = { bpm: null, pattern: 'tempos', volume: 0.7, countIn: true, withScore: true, on: false, docBpm: 80, docTs: '4/4' };
 
 export const MIN_BPM = 30;
 export const MAX_BPM = 240;
@@ -56,6 +69,8 @@ export function parseSettings(raw: string | null): MetroSettings {
       countIn: typeof s.countIn === 'boolean' ? s.countIn : DEFAULT_SETTINGS.countIn,
       withScore: typeof s.withScore === 'boolean' ? s.withScore : DEFAULT_SETTINGS.withScore,
       on: typeof s.on === 'boolean' ? s.on : DEFAULT_SETTINGS.on,
+      docBpm: typeof s.docBpm === 'number' ? clampBpm(s.docBpm) : DEFAULT_SETTINGS.docBpm,
+      docTs: typeof s.docTs === 'string' && DOC_TIME_SIGNATURES.includes(s.docTs) ? s.docTs : DEFAULT_SETTINGS.docTs,
     };
   } catch {
     return { ...DEFAULT_SETTINGS };

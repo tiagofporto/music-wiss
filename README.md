@@ -118,7 +118,7 @@ O botão **mais** na barra de baixo abre o painel de expressão (também tem tud
 
 Tudo isso vai e volta pelo MusicXML (`<dynamics>`, `<articulations>`, `<lyric>`, `<harmony>`, `<repeat>`, `<ending>`).
 
-## Metrônomo (aba Escrever)
+## Metrônomo (abas Escrever e Editar)
 
 Botão do metrônomo no topo, ou **Ctrl+Shift+M**. O painel fica aberto ao lado da partitura:
 
@@ -128,6 +128,7 @@ Botão do metrônomo no topo, ou **Ctrl+Shift+M**. O painel fica aberto ao lado 
 - **Praticar a leitura**: conta um compasso antes (número grande na tela) e o cursor anda nota a nota junto com o clique, a partir de onde ele está. Desligue "Tocar as notas da partitura" para ouvir só os cliques e tocar você mesmo.
 - **Junto com Ouvir**: os cliques tocam sempre que você aperta Ouvir (Espaço).
 - **Só o metrônomo**: clique contínuo na fórmula de compasso do cursor.
+- **Na aba Editar** (PDF e fotos): o mesmo painel, com escolha do compasso (2/4 a 12/8) e andamento próprios. **Começar a ler** conta um compasso e depois mostra o número do compasso em que você está.
 
 Os cliques seguem as mudanças de compasso e as repetições da partitura. As preferências ficam salvas no aparelho. A lógica está em `src/audio/metronome.ts`, com testes em `tests/metronome.test.ts`.
 

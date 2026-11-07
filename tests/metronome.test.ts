@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { atTempo, beatsOf, buildClicks, clampBpm, clicksForMeasure, freeBar, parseSettings, tapTempo } from '../src/audio/metronome';
+import { atTempo, beatsOf, buildClicks, clampBpm, clicksForMeasure, freeBar, parseSettings, parseTimeSig, tapTempo } from '../src/audio/metronome';
 import { Editor } from '../src/editor/editor';
 import { Fraction } from '../src/model/fraction';
 import type { Step } from '../src/model/pitch';
@@ -129,5 +129,21 @@ describe('metrônomo: ajustes', () => {
     expect(atTempo(s, 60).tempo).toBe(60);
     expect(s.tempo).toBe(96);
     expect(atTempo(s, null)).toBe(s);
+  });
+});
+
+describe('metrônomo na aba Editar (PDF/foto)', () => {
+  it('guarda andamento e compasso próprios', () => {
+    expect(parseSettings(null)).toMatchObject({ docBpm: 80, docTs: '4/4' });
+    expect(parseSettings('{"docBpm":10,"docTs":"6/8"}')).toMatchObject({ docBpm: 30, docTs: '6/8' });
+    expect(parseSettings('{"docTs":"99/3"}')).toMatchObject({ docTs: '4/4' });
+  });
+  it('lê a fórmula escolhida e faz o compasso solto', () => {
+    expect(parseTimeSig('6/8')).toEqual({ beats: 6, beatType: 8 });
+    expect(parseTimeSig('lixo')).toEqual({ beats: 4, beatType: 4 });
+    const bar = freeBar(parseTimeSig('6/8'), 60, 'tempos');
+    // 6/8 a 60 (semínima): dois tempos de semínima pontuada, 1,5 s cada
+    expect(bar.clicks.map((c) => c.at)).toEqual([0, 1.5]);
+    expect(bar.length).toBeCloseTo(3);
   });
 });

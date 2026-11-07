@@ -1974,9 +1974,15 @@ p { text-wrap: pretty; }
 .metro-btn.tick .metro-led { animation: metro-led 0.18s ease-out; }
 .metro-btn.tick.accent .metro-led { animation-duration: 0.26s; background: var(--brass-hi); }
 @keyframes metro-led { from { transform: scale(1.9); box-shadow: 0 0 0 2px var(--paper), 0 0 14px var(--brass-hi); } to { transform: scale(1); } }
-.edit-mode .metro-btn, .at-home .metro-btn, .perform-mode .metro-btn,
-.edit-mode .metro-panel, .at-home .metro-panel, .perform-mode .metro-panel,
-.edit-mode .metro-count, .at-home .metro-count, .perform-mode .metro-count { display: none !important; }
+.at-home .metro-btn, .perform-mode .metro-btn,
+.at-home .metro-panel, .perform-mode .metro-panel,
+.at-home .metro-count, .perform-mode .metro-count,
+.edit-mode .metro-panel [data-only="write"], #app:not(.edit-mode) .metro-panel [data-only="edit"] { display: none !important; }
+.metro-barno { margin: -4px 0 0; min-height: 18px; text-align: center; font: 600 13px var(--font-display); color: var(--brass-hi); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; }
+.metro-ts { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 13px; }
+.metro-ts select { font: 600 14px var(--font-ui); color: var(--dock-ink); background: rgb(255 255 255 / 8%); border: 1px solid rgb(255 255 255 / 16%); border-radius: 10px; padding: 6px 10px; }
+.metro-ts select option { color: #131a33; }
+.edit-mode .metro-actions { grid-template-columns: 1fr; }
 
 .metro-panel {
   position: fixed;
